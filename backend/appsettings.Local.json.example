@@ -1,0 +1,20 @@
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "postgresql://postgres.YOUR_PROJECT_REF:YOUR_DB_PASSWORD@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
+  },
+  "Sarvam": {
+    "ApiKey": "your-sarvam-api-key",
+    "ChatModel": "sarvam-105b",
+    "SttModel": "saaras:v4",
+    "TtsModel": "bulbul:v3"
+  },
+  "Voice": {
+    "PublicBaseUrl": "https://YOUR-NGROK.ngrok-free.app"
+  },
+  "Exotel": {
+    "ApiKey": "your-exotel-api-key",
+    "ApiToken": "your-exotel-api-token",
+    "AccountSid": "your-exotel-account-sid",
+    "Subdomain": "api.exotel.com"
+  }
+}

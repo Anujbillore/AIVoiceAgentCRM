@@ -1,0 +1,11 @@
+.dotnet/
+backend/bin/
+backend/obj/
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+frontend/node_modules/
+frontend/dist/
+backend/appsettings.Local.json
+backend/uploads/
+*.user

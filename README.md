@@ -49,6 +49,26 @@ npm run dev
 
 Open http://localhost:5173 and sign in.
 
+## Free one-place host (Render)
+
+The Docker image serves the React app and the API together. Create one **Web Service** on the [Render free plan](https://render.com).
+
+1. Push this repo to GitHub.
+2. Render → **New → Web Service** → connect the repo. Runtime: **Docker**. Instance: **Free**.
+3. Set environment variables (do not put these in git):
+
+| Variable | Value |
+|---|---|
+| `ConnectionStrings__DefaultConnection` | Your Supabase URI |
+| `Jwt__Key` | A long random string (32+ characters) |
+| `Sarvam__ApiKey` | Optional for UI testing; required for phone STT/TTS |
+| `Exotel__ApiKey` / `Exotel__ApiToken` | Optional until you test a real ExoPhone |
+
+4. Deploy. Open `https://YOUR-SERVICE.onrender.com` and sign in with the demo admin account.
+5. For an Exotel test, set the ExoML URL to `https://YOUR-SERVICE.onrender.com/api/voice/exotel/incoming`.
+
+Free Render **sleeps after about 15 minutes**. The first visit can take a minute to wake. Open the site first before you dial the ExoPhone, or the webhook will time out. Local `ngrok` is still the most reliable free phone test.
+
 | Role    | Email              | Password    |
 |---------|--------------------|-------------|
 | Admin   | admin@clinic.com   | Admin@123   |

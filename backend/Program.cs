@@ -14,6 +14,12 @@ AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
 
+var listenPort = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+if (!builder.Environment.IsDevelopment())
+{
+    builder.WebHost.UseUrls($"http://0.0.0.0:{listenPort}");
+}
+
 builder.Services.AddControllers();
 builder.Services.Configure<FormOptions>(options =>
 {
@@ -81,11 +87,23 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 
-var frontend = builder.Configuration["FrontendUrl"] ?? "http://localhost:5173";
+var renderUrl = Environment.GetEnvironmentVariable("RENDER_EXTERNAL_URL");
+var frontend = renderUrl
+    ?? builder.Configuration["FrontendUrl"]
+    ?? "http://localhost:5173";
+if (!string.IsNullOrWhiteSpace(renderUrl))
+{
+    builder.Configuration["FrontendUrl"] = renderUrl.TrimEnd('/');
+    if (string.IsNullOrWhiteSpace(builder.Configuration["Voice:PublicBaseUrl"]))
+    {
+        builder.Configuration["Voice:PublicBaseUrl"] = renderUrl.TrimEnd('/');
+    }
+}
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("spa", policy =>
-        policy.WithOrigins(frontend, "http://localhost:5173", "http://127.0.0.1:5173")
+        policy.WithOrigins(frontend.TrimEnd('/'), "http://localhost:5173", "http://127.0.0.1:5173")
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials());
@@ -113,6 +131,15 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("spa");
+
+var webRoot = app.Environment.WebRootPath ?? Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+var spaIndex = Path.Combine(webRoot, "index.html");
+if (File.Exists(spaIndex))
+{
+    app.UseDefaultFiles();
+    app.UseStaticFiles();
+}
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
@@ -128,5 +155,10 @@ app.MapGet("/health", async (AppDbContext db) =>
         connected
     });
 });
+
+if (File.Exists(spaIndex))
+{
+    app.MapFallbackToFile("index.html");
+}
 
 app.Run();

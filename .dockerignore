@@ -1,0 +1,12 @@
+.git
+**/.vs
+**/bin
+**/obj
+**/node_modules
+frontend/dist
+backend/appsettings.Local.json
+backend/uploads
+*.user
+**/*.db
+**/*.db-shm
+**/*.db-wal

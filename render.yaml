@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: clinic-portal
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: ConnectionStrings__DefaultConnection
+        sync: false
+      - key: Jwt__Key
+        sync: false
+      - key: Sarvam__ApiKey
+        sync: false
+      - key: Exotel__ApiKey
+        sync: false
+      - key: Exotel__ApiToken
+        sync: false
+      - key: Exotel__AccountSid
+        sync: false

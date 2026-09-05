@@ -14,16 +14,10 @@ The API uses **Supabase PostgreSQL** (EF Core + Npgsql). Tables, Identity users,
 copy backend\appsettings.Local.json.example backend\appsettings.Local.json
 ```
 
-`appsettings.Local.json` is gitignored. You can paste either:
+`appsettings.Local.json` is gitignored. Use the **Session pooler** (IPv4). Do not use `db.*.supabase.co` on Render — that host is IPv6-only and the deploy will crash with "Network is unreachable".
 
 ```
-postgresql://postgres.xxxx:YOUR_PASSWORD@aws-0-ap-south-1.pooler.supabase.com:5432/postgres
-```
-
-or:
-
-```
-Host=db.xxxx.supabase.co;Port=5432;Database=postgres;Username=postgres;Password=YOUR_PASSWORD;SSL Mode=Require;Trust Server Certificate=true
+postgresql://postgres.YOUR_PROJECT_REF:YOUR_PASSWORD@aws-0-YOUR-REGION.pooler.supabase.com:5432/postgres
 ```
 
 Avoid the transaction pooler on port `6543` for `dotnet ef` / first migrate.
@@ -59,7 +53,7 @@ The Docker image serves the React app and the API together. Create one **Web Ser
 
 | Variable | Value |
 |---|---|
-| `ConnectionStrings__DefaultConnection` | Your Supabase URI |
+| `ConnectionStrings__DefaultConnection` | Supabase **Session pooler** URI. Username must be `postgres.YOUR_PROJECT_REF`, host `*.pooler.supabase.com`, port `5432`. Not `db.*.supabase.co`. |
 | `Jwt__Key` | A long random string (32+ characters) |
 | `Sarvam__ApiKey` | Optional for UI testing; required for phone STT/TTS |
 | `Exotel__ApiKey` / `Exotel__ApiToken` | Optional until you test a real ExoPhone |

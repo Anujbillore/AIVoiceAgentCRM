@@ -31,7 +31,7 @@ public static class DbSeeder
         catch (Exception ex)
         {
             throw new InvalidOperationException(
-                "Database migrate failed. Use the Supabase Session pooler on port 5432 (not the transaction pooler on 6543). " + Innermost(ex),
+                "Database migrate failed. On the Session pooler the username must be postgres.YOUR_PROJECT_REF (not postgres). Copy the Session pooler URI from Supabase → Database, port 5432. If the database password contains @, paste Host=...;Username=...;Password=... instead of a URI, or encode @ as %40. " + Innermost(ex),
                 ex);
         }
 

@@ -19,7 +19,6 @@ public static class DatabaseConfiguration
         var builder = ToBuilder(connectionString);
         EnsureSessionPoolerUser(builder);
         builder.SslMode = SslMode.Require;
-        builder.TrustServerCertificate = true;
         if (builder.Port == 6543)
         {
             builder.Port = 5432;
@@ -33,6 +32,8 @@ public static class DatabaseConfiguration
         var builder = ToBuilder(Normalize(connectionString));
         return (builder.Host ?? "unknown", builder.Username ?? "unknown", builder.Database ?? "unknown");
     }
+
+    public static string HostName(string connectionString) => Describe(connectionString).Host;
 
     public static void UseSupabase(this DbContextOptionsBuilder options, string connectionString)
     {
@@ -171,8 +172,7 @@ public static class DatabaseConfiguration
             Database = database,
             Username = user,
             Password = password,
-            SslMode = SslMode.Require,
-            TrustServerCertificate = true
+            SslMode = SslMode.Require
         };
         return builder.ConnectionString;
     }

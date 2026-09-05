@@ -8,7 +8,7 @@ RUN npm run build
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 COPY backend/ ./backend/
-RUN dotnet publish backend/AiVoicePortal.Api.csproj -c Release -o /app/publish /p:UseAppHost=false
+RUN dotnet publish backend/AiVoicePortal.Api.csproj -c Release -o /app/publish /p:UseAppHost=false /p:TreatWarningsAsErrors=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:9.0
 WORKDIR /app

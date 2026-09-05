@@ -9,11 +9,31 @@ public static class DbSeeder
     public static async Task SeedAsync(IServiceProvider services)
     {
         using var scope = services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        AppDbContext db;
+        try
+        {
+            db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                "Could not open Supabase. On Render, set ConnectionStrings__DefaultConnection to the Session pooler URI (port 5432), with no quotes. " + Innermost(ex),
+                ex);
+        }
+
         var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
         var roles = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
 
-        await db.Database.MigrateAsync();
+        try
+        {
+            await db.Database.MigrateAsync();
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                "Database migrate failed. Use the Supabase Session pooler on port 5432 (not the transaction pooler on 6543). " + Innermost(ex),
+                ex);
+        }
 
         foreach (var role in AppRoles.All)
         {
@@ -289,6 +309,16 @@ public static class DbSeeder
         }
 
         return user;
+    }
+
+    private static string Innermost(Exception ex)
+    {
+        while (ex.InnerException is not null)
+        {
+            ex = ex.InnerException;
+        }
+
+        return ex.Message;
     }
 
     private static List<DoctorSchedule> WeekdaySchedule(TimeSpan start, TimeSpan end)

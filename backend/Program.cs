@@ -37,6 +37,9 @@ if (string.IsNullOrWhiteSpace(supabaseConnection)
         "Supabase is not configured. Copy backend/appsettings.Local.json.example to backend/appsettings.Local.json and paste the URI from Supabase → Project Settings → Database.");
 }
 
+var dbTarget = DatabaseConfiguration.Describe(supabaseConnection);
+Console.WriteLine($"Supabase target host={dbTarget.Host} user={dbTarget.Username} database={dbTarget.Database}");
+
 builder.Services.AddDbContext<AppDbContext>(options => options.UseSupabase(supabaseConnection));
 
 builder.Services

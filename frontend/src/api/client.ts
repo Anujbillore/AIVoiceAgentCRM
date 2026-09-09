@@ -56,6 +56,7 @@ export interface Patient {
   emergencyName: string;
   emergencyPhone: string;
   allergies: string;
+  hasLogin?: boolean;
 }
 
 export interface PatientDocument {
@@ -156,6 +157,11 @@ export interface CallLog {
   confidence?: number;
   sentiment?: string;
   consentGiven?: boolean;
+  appointmentId?: number | null;
+  bookedDoctorName?: string;
+  appointmentTime?: string | null;
+  needsPersonalContact?: boolean;
+  callbackStatus?: string;
 }
 
 export interface EmailMessage {
@@ -264,6 +270,20 @@ export interface VoiceSession {
   isVip?: boolean;
 }
 
+export interface ExotelNumber {
+  sid: string;
+  phoneNumber: string;
+  voiceUrl: string;
+  attachedToPortal: boolean;
+}
+
+export interface ExotelAttachResult {
+  ok: boolean;
+  phoneSid: string;
+  incomingUrl: string;
+  message: string;
+}
+
 export interface VoiceStatus {
   sarvamConfigured: boolean;
   agentName: string;
@@ -277,6 +297,14 @@ export interface VoiceStatus {
   exotelConfigured: boolean;
   publicBaseUrl?: string;
   phoneReady?: boolean;
+  sarvamVoicebotUrl?: string;
+  agentContextWebhook?: string;
+  availabilityWebhook?: string;
+  bookAppointmentWebhook?: string;
+  callEndedWebhook?: string;
+  agentEndedWebhook?: string;
+  webhookSecret?: string;
+  clinicPhone?: string;
 }
 
 export interface InvoiceLine {

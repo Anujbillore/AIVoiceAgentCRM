@@ -17,4 +17,5 @@ public class CallLog
     public string Sentiment { get; set; } = "Neutral";
     public bool ConsentGiven { get; set; } = true;
     public int? PatientId { get; set; }
+    public string ExternalId { get; set; } = string.Empty;
 }

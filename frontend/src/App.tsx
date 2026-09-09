@@ -11,15 +11,14 @@ import { DashboardPage } from "./pages/Dashboard";
 import { PatientsPage } from "./pages/Patients";
 import { ProfilePage } from "./pages/Profile";
 import { AppointmentsPage } from "./pages/Appointments";
-import { BillingPage } from "./pages/Billing";
-import { InsurancePage } from "./pages/Insurance";
-import { PaymentsPage } from "./pages/Payments";
 import { SettingsPage } from "./pages/Settings";
-import { VoiceAgentPage } from "./pages/VoiceAgent";
+import { CallLogPage } from "./pages/CallLog";
+import { SupportPage } from "./pages/Support";
+import { NotificationsPage } from "./pages/Notifications";
 
 function GuestOnly({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  if (user) return <Navigate to="/" replace />;
+  if (user) return <Navigate to={user.role === "Patient" ? "/appointments" : "/"} replace />;
   return <>{children}</>;
 }
 
@@ -53,7 +52,22 @@ export default function App() {
               </ProtectedRoute>
             }
           >
-            <Route path="/" element={<DashboardPage />} />
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute roles={["Admin", "Doctor"]}>
+                  <DashboardPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/calls"
+              element={
+                <ProtectedRoute roles={["Admin", "Doctor"]}>
+                  <CallLogPage />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/patients"
               element={
@@ -71,24 +85,19 @@ export default function App() {
               }
             />
             <Route path="/appointments" element={<AppointmentsPage />} />
-            <Route path="/billing" element={<BillingPage />} />
-            <Route path="/insurance" element={<InsurancePage />} />
+            <Route path="/support" element={<SupportPage />} />
             <Route
-              path="/payments"
+              path="/notifications"
               element={
                 <ProtectedRoute roles={["Admin", "Doctor"]}>
-                  <PaymentsPage />
+                  <NotificationsPage />
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/voice"
-              element={
-                <ProtectedRoute roles={["Admin", "Doctor"]}>
-                  <VoiceAgentPage />
-                </ProtectedRoute>
-              }
-            />
+            <Route path="/billing" element={<Navigate to="/" replace />} />
+            <Route path="/insurance" element={<Navigate to="/" replace />} />
+            <Route path="/payments" element={<Navigate to="/" replace />} />
+            <Route path="/voice" element={<Navigate to="/" replace />} />
             <Route
               path="/settings"
               element={

@@ -1,4 +1,5 @@
 using AiVoicePortal.Api.DTOs;
+using AiVoicePortal.Api.Models;
 using AiVoicePortal.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -13,14 +14,16 @@ public class VoiceController : ControllerBase
     private readonly ISarvamAiService _ai;
     private readonly IVoiceSessionStore _sessions;
     private readonly IExotelMediaService _exotel;
+    private readonly IExotelPhoneService _phones;
     private readonly IConfiguration _config;
 
-    public VoiceController(IVoiceAgentService voice, ISarvamAiService ai, IVoiceSessionStore sessions, IExotelMediaService exotel, IConfiguration config)
+    public VoiceController(IVoiceAgentService voice, ISarvamAiService ai, IVoiceSessionStore sessions, IExotelMediaService exotel, IExotelPhoneService phones, IConfiguration config)
     {
         _voice = voice;
         _ai = ai;
         _sessions = sessions;
         _exotel = exotel;
+        _phones = phones;
         _config = config;
     }
 
@@ -168,6 +171,39 @@ public class VoiceController : ControllerBase
 
         var gatherUrl = $"{Request.Scheme}://{Request.Host}/api/voice/twilio/gather";
         return Content(TwimlGather(result.ReplyText, gatherUrl), "application/xml");
+    }
+
+    [HttpGet("exotel/numbers")]
+    [Authorize(Roles = AppRoles.Admin)]
+    public async Task<ActionResult<IReadOnlyList<ExotelNumberDto>>> ExotelNumbers(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _phones.ListNumbersAsync(cancellationToken));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("exotel/attach")]
+    [Authorize(Roles = AppRoles.Admin)]
+    public async Task<ActionResult<ExotelAttachResult>> AttachExotel(ExotelAttachRequest request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.PhoneSid))
+        {
+            return BadRequest(new { message = "PhoneSid is required." });
+        }
+
+        try
+        {
+            return await _phones.AttachIncomingAsync(request.PhoneSid, cancellationToken);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     [HttpGet("exotel/incoming")]

@@ -17,7 +17,7 @@ export function LoginPage() {
     setLoading(true);
     try {
       const signedIn = await login(email, password);
-      navigate(signedIn.role === "Doctor" ? "/appointments" : "/");
+      navigate(signedIn.role === "Patient" ? "/appointments" : signedIn.role === "Doctor" ? "/appointments" : "/");
     } catch {
       setError("Invalid email or password.");
     } finally {

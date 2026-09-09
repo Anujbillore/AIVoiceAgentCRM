@@ -81,6 +81,41 @@ public static class DbSeeder
             await db.SaveChangesAsync();
         }
 
+        if (!await db.Doctors.AnyAsync(d => d.Specialization.Contains("Dentist")))
+        {
+            db.Doctors.AddRange(
+                new Doctor
+                {
+                    Name = "Dr. Desai",
+                    Email = "desai@clinic.com",
+                    Specialization = "Dentist",
+                    Phone = "+91 98765 44444",
+                    IsActive = true,
+                    Schedules = WeekdaySchedule(new TimeSpan(9, 0, 0), new TimeSpan(17, 0, 0))
+                },
+                new Doctor
+                {
+                    Name = "Dr. Banerjee",
+                    Email = "banerjee@clinic.com",
+                    Specialization = "Dentist",
+                    Phone = "+91 98765 55555",
+                    IsActive = true,
+                    Schedules = WeekdaySchedule(new TimeSpan(10, 0, 0), new TimeSpan(18, 0, 0))
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var soleGp = await db.Doctors
+            .Include(d => d.Schedules)
+            .Where(d => d.IsActive && d.Specialization.Contains("General Physician"))
+            .OrderBy(d => d.Id)
+            .FirstOrDefaultAsync();
+        if (soleGp is not null && soleGp.Schedules.Count == 0)
+        {
+            soleGp.Schedules = WeekdaySchedule(new TimeSpan(9, 0, 0), new TimeSpan(18, 0, 0));
+            await db.SaveChangesAsync();
+        }
+
         if (!await db.Patients.AnyAsync())
         {
             var patientUser = await users.FindByEmailAsync("patient@clinic.com");
@@ -95,17 +130,19 @@ public static class DbSeeder
 
         if (!await db.Appointments.AnyAsync())
         {
-            var rahul = await db.Patients.FirstAsync(p => p.Name == "Rahul Sharma");
-            var priya = await db.Patients.FirstAsync(p => p.Name == "Priya Nair");
-            var mehta = await db.Doctors.FirstAsync(d => d.Name == "Dr. Mehta");
-            var kapoor = await db.Doctors.FirstAsync(d => d.Name == "Dr. Kapoor");
+            var rahul = await db.Patients.FirstOrDefaultAsync(p => p.Name == "Rahul Sharma");
+            var priya = await db.Patients.FirstOrDefaultAsync(p => p.Name == "Priya Nair");
+            var mehta = await db.Doctors.FirstOrDefaultAsync(d => d.Specialization.Contains("General Physician"));
+            var kapoor = await db.Doctors.FirstOrDefaultAsync(d => d.Name == "Dr. Kapoor") ?? mehta;
             var today = DateTime.Today;
-
+            if (rahul is not null && priya is not null && mehta is not null)
+            {
             db.Appointments.AddRange(
                 new Appointment { PatientId = rahul.Id, DoctorId = mehta.Id, ScheduledAt = today.AddHours(17), Status = "Scheduled", Notes = "Booked via AI voice agent" },
                 new Appointment { PatientId = priya.Id, DoctorId = kapoor.Id, ScheduledAt = today.AddDays(1).AddHours(11), Status = "Scheduled", Notes = "Fever follow-up" }
             );
             await db.SaveChangesAsync();
+            }
         }
 
         if (!await db.CallLogs.AnyAsync())

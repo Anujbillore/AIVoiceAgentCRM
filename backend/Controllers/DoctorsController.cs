@@ -1,6 +1,7 @@
 using AiVoicePortal.Api.Data;
 using AiVoicePortal.Api.DTOs;
 using AiVoicePortal.Api.Models;
+using AiVoicePortal.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -43,11 +44,16 @@ public class DoctorsController : ControllerBase
             return BadRequest(new { message = "Select at least one working day." });
         }
 
+        if (!DoctorSpecialties.IsKnown(request.Specialization))
+        {
+            return BadRequest(new { message = "Select a specialization from the list." });
+        }
+
         var doctor = new Doctor
         {
             Name = request.Name,
             Email = request.Email,
-            Specialization = request.Specialization ?? string.Empty,
+            Specialization = request.Specialization.Trim(),
             Phone = request.Phone ?? string.Empty,
             IsActive = request.IsActive,
             Schedules = MapSchedules(request.Schedules)
@@ -79,9 +85,14 @@ public class DoctorsController : ControllerBase
             return BadRequest(new { message = "Select at least one working day." });
         }
 
+        if (!DoctorSpecialties.IsKnown(request.Specialization))
+        {
+            return BadRequest(new { message = "Select a specialization from the list." });
+        }
+
         doctor.Name = request.Name;
         doctor.Email = request.Email;
-        doctor.Specialization = request.Specialization ?? string.Empty;
+        doctor.Specialization = request.Specialization.Trim();
         doctor.Phone = request.Phone ?? string.Empty;
         doctor.IsActive = request.IsActive;
         _db.DoctorSchedules.RemoveRange(doctor.Schedules);

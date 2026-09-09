@@ -1,9 +1,12 @@
 using AiVoicePortal.Api.Data;
 using AiVoicePortal.Api.DTOs;
+using AiVoicePortal.Api.Hubs;
 using AiVoicePortal.Api.Models;
 using AiVoicePortal.Api.Services;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 namespace AiVoicePortal.Api.Controllers;
@@ -23,19 +26,25 @@ public class PatientsController : ControllerBase
     private readonly IAppointmentService _appointments;
     private readonly ISarvamAiService _ai;
     private readonly IWebHostEnvironment _env;
+    private readonly UserManager<ApplicationUser> _users;
+    private readonly IHubContext<DashboardHub> _hub;
 
     public PatientsController(
         AppDbContext db,
         ICurrentUserService current,
         IAppointmentService appointments,
         ISarvamAiService ai,
-        IWebHostEnvironment env)
+        IWebHostEnvironment env,
+        UserManager<ApplicationUser> users,
+        IHubContext<DashboardHub> hub)
     {
         _db = db;
         _current = current;
         _appointments = appointments;
         _ai = ai;
         _env = env;
+        _users = users;
+        _hub = hub;
     }
 
     [HttpGet]
@@ -116,6 +125,12 @@ public class PatientsController : ControllerBase
             Notes = request.Notes ?? string.Empty
         };
         ApplyClinical(patient, request);
+        var login = await EnsurePatientLoginAsync(patient, request.Password);
+        if (login is not null)
+        {
+            return BadRequest(new { message = login });
+        }
+
         _db.Patients.Add(patient);
         await _db.SaveChangesAsync(cancellationToken);
         AssignUhid(patient);
@@ -134,6 +149,12 @@ public class PatientsController : ControllerBase
         }
 
         Apply(patient, request);
+        var login = await EnsurePatientLoginAsync(patient, request.Password);
+        if (login is not null)
+        {
+            return BadRequest(new { message = login });
+        }
+
         await _db.SaveChangesAsync(cancellationToken);
         return await ToDtoAsync(patient, cancellationToken);
     }
@@ -152,6 +173,72 @@ public class PatientsController : ControllerBase
         _db.Patients.Remove(patient);
         await _db.SaveChangesAsync(cancellationToken);
         return NoContent();
+    }
+
+    [HttpGet("me/tickets")]
+    [Authorize(Roles = AppRoles.Patient)]
+    public async Task<ActionResult<List<CallLogDto>>> MyTickets(CancellationToken cancellationToken)
+    {
+        var patient = await GetOwnAsync(cancellationToken);
+        if (patient is null)
+        {
+            return NotFound(new { message = "Patient profile not found." });
+        }
+
+        var calls = await _db.CallLogs
+            .Where(c => c.PatientId == patient.Id || c.CallerPhone == patient.Contact || c.CallerName == patient.Name)
+            .OrderByDescending(c => c.Timestamp)
+            .Take(50)
+            .ToListAsync(cancellationToken);
+        var callbacks = await _db.CallCallbacks.OrderByDescending(c => c.CreatedAt).ToListAsync(cancellationToken);
+        return calls.Select(c => CallLogDetails.ToDto(c, null, CallLogDetails.FindCallback(c, callbacks))).ToList();
+    }
+
+    [HttpPost("me/tickets")]
+    [Authorize(Roles = AppRoles.Patient)]
+    public async Task<ActionResult<CallLogDto>> CreateTicket(SupportTicketRequest request, CancellationToken cancellationToken)
+    {
+        var patient = await GetOwnAsync(cancellationToken);
+        if (patient is null)
+        {
+            return NotFound(new { message = "Patient profile not found." });
+        }
+
+        var message = request.Message?.Trim() ?? "";
+        if (message.Length < 3)
+        {
+            return BadRequest(new { message = "Write a short message so the clinic can help." });
+        }
+
+        var call = new CallLog
+        {
+            CallerName = patient.Name,
+            CallerPhone = patient.Contact,
+            Summary = message,
+            ActionTaken = "Patient portal support request",
+            Intent = "Support",
+            Transcript = message,
+            Timestamp = DateTime.UtcNow,
+            Outcome = "Callback",
+            PatientId = patient.Id
+        };
+        _db.CallLogs.Add(call);
+        var callback = new CallCallback
+        {
+            CallerName = patient.Name,
+            CallerPhone = patient.Contact,
+            Reason = "Patient portal",
+            Summary = message,
+            Status = "Queued",
+            CreatedAt = DateTime.UtcNow
+        };
+        _db.CallCallbacks.Add(callback);
+        await _db.SaveChangesAsync(cancellationToken);
+        await _hub.Clients.All.SendAsync(
+            "CallbackQueued",
+            new { callerName = patient.Name, callerPhone = patient.Contact, summary = message },
+            cancellationToken);
+        return CallLogDetails.ToDto(call, null, callback);
     }
 
     [HttpGet("{id:int}/documents")]
@@ -402,7 +489,8 @@ public class PatientsController : ControllerBase
             p.BloodGroup,
             p.EmergencyName,
             p.EmergencyPhone,
-            p.Allergies));
+            p.Allergies,
+            p.UserId != null && p.UserId != ""));
 
     private async Task<PatientDto> ToDtoAsync(Patient patient, CancellationToken cancellationToken)
     {
@@ -424,7 +512,8 @@ public class PatientsController : ControllerBase
             patient.BloodGroup,
             patient.EmergencyName,
             patient.EmergencyPhone,
-            patient.Allergies);
+            patient.Allergies,
+            !string.IsNullOrEmpty(patient.UserId));
     }
 
     private static PatientDocumentDto ToDocumentDto(PatientDocument document) =>
@@ -451,6 +540,89 @@ public class PatientsController : ControllerBase
         patient.EmergencyName = request.EmergencyName ?? string.Empty;
         patient.EmergencyPhone = request.EmergencyPhone ?? string.Empty;
         patient.Allergies = request.Allergies ?? string.Empty;
+    }
+
+    private async Task<string?> EnsurePatientLoginAsync(Patient patient, string? password)
+    {
+        if (string.IsNullOrWhiteSpace(patient.Email))
+        {
+            return string.IsNullOrWhiteSpace(password)
+                ? null
+                : "Add the patient's email before setting a portal password.";
+        }
+
+        ApplicationUser? user = null;
+        if (!string.IsNullOrEmpty(patient.UserId))
+        {
+            user = await _users.FindByIdAsync(patient.UserId);
+        }
+
+        user ??= await _users.FindByEmailAsync(patient.Email);
+
+        if (user is null)
+        {
+            if (string.IsNullOrWhiteSpace(password))
+            {
+                return null;
+            }
+
+            user = new ApplicationUser
+            {
+                UserName = patient.Email,
+                Email = patient.Email,
+                EmailConfirmed = true,
+                FullName = patient.Name,
+                PhoneNumber = patient.Contact,
+                Age = patient.Age
+            };
+            var created = await _users.CreateAsync(user, password);
+            if (!created.Succeeded)
+            {
+                return string.Join(" ", created.Errors.Select(e => e.Description));
+            }
+
+            if (!await _users.IsInRoleAsync(user, AppRoles.Patient))
+            {
+                await _users.AddToRoleAsync(user, AppRoles.Patient);
+            }
+        }
+        else
+        {
+            var roles = await _users.GetRolesAsync(user);
+            if (roles.Contains(AppRoles.Admin) || roles.Contains(AppRoles.Doctor))
+            {
+                return "That email is already used by a staff account.";
+            }
+
+            user.Email = patient.Email;
+            user.UserName = patient.Email;
+            user.FullName = patient.Name;
+            user.PhoneNumber = patient.Contact;
+            user.Age = patient.Age;
+            var updated = await _users.UpdateAsync(user);
+            if (!updated.Succeeded)
+            {
+                return string.Join(" ", updated.Errors.Select(e => e.Description));
+            }
+
+            if (!await _users.IsInRoleAsync(user, AppRoles.Patient))
+            {
+                await _users.AddToRoleAsync(user, AppRoles.Patient);
+            }
+
+            if (!string.IsNullOrWhiteSpace(password))
+            {
+                var token = await _users.GeneratePasswordResetTokenAsync(user);
+                var reset = await _users.ResetPasswordAsync(user, token, password);
+                if (!reset.Succeeded)
+                {
+                    return string.Join(" ", reset.Errors.Select(e => e.Description));
+                }
+            }
+        }
+
+        patient.UserId = user.Id;
+        return null;
     }
 
     private static void AssignUhid(Patient patient)

@@ -128,10 +128,10 @@ export function PatientChart({
                 <thead className="bg-slate-50 text-slate-500">
                   <tr>
                     <th className="px-5 py-3 font-medium">When</th>
-                    <th className="px-5 py-3 font-medium">Doctor</th>
+                    <th className="px-5 py-3 font-medium">Booked with</th>
                     <th className="px-5 py-3 font-medium">Status</th>
                     <th className="px-5 py-3 font-medium">Linked records</th>
-                    <th className="px-5 py-3 font-medium">Notes</th>
+                    <th className="px-5 py-3 font-medium">Call summary</th>
                   </tr>
                 </thead>
                 <tbody>

@@ -32,7 +32,8 @@ public record PatientRequest(
     string BloodGroup,
     string EmergencyName,
     string EmergencyPhone,
-    string Allergies);
+    string Allergies,
+    string? Password = null);
 
 public record PatientDto(
     int Id,
@@ -50,7 +51,8 @@ public record PatientDto(
     string BloodGroup = "",
     string EmergencyName = "",
     string EmergencyPhone = "",
-    string Allergies = "");
+    string Allergies = "",
+    bool HasLogin = false);
 
 public record PatientDocumentDto(int Id, int PatientId, int? AppointmentId, string Category, string OriginalName, string ContentType, long SizeBytes, DateTime UploadedAt);
 
@@ -97,7 +99,7 @@ public record ScheduleRequest(DayOfWeek DayOfWeek, string StartTime, string EndT
 public record DoctorRequest(
     [Required] string Name,
     [Required, EmailAddress] string Email,
-    string Specialization,
+    [Required] string Specialization,
     string Phone,
     bool IsActive,
     string? Password,
@@ -118,6 +120,10 @@ public record BookAppointmentRequest(
     [Required] int DoctorId,
     [Required] DateTime ScheduledAt,
     string Notes);
+
+public record RescheduleRequest([Required] DateTime ScheduledAt);
+
+public record SupportTicketRequest([Required] string Message);
 
 public record AppointmentPageDto(List<AppointmentDto> Items, int Total, int Page, int PageSize);
 
@@ -149,7 +155,12 @@ public record CallLogDto(
     string TransferType = "None",
     double Confidence = 1,
     string Sentiment = "Neutral",
-    bool ConsentGiven = true);
+    bool ConsentGiven = true,
+    int? AppointmentId = null,
+    string BookedDoctorName = "",
+    DateTime? AppointmentTime = null,
+    bool NeedsPersonalContact = false,
+    string CallbackStatus = "");
 
 public record SimulateCallRequest(
     string CallerName,
@@ -188,6 +199,12 @@ public record VoiceSessionDto(
     int ClarifyingQuestions = 0,
     bool IsVip = false);
 
+public record ExotelNumberDto(string Sid, string PhoneNumber, string VoiceUrl, bool AttachedToPortal);
+
+public record ExotelAttachRequest(string PhoneSid);
+
+public record ExotelAttachResult(bool Ok, string PhoneSid, string IncomingUrl, string Message);
+
 public record VoiceStatusDto(
     bool SarvamConfigured,
     string AgentName,
@@ -200,7 +217,15 @@ public record VoiceStatusDto(
     string ExotelAudioWebhook,
     bool ExotelConfigured,
     string PublicBaseUrl = "",
-    bool PhoneReady = false);
+    bool PhoneReady = false,
+    string SarvamVoicebotUrl = "https://apps.sarvam.ai/api/app-runtime/channels/exotel",
+    string AgentContextWebhook = "",
+    string AvailabilityWebhook = "",
+    string BookAppointmentWebhook = "",
+    string CallEndedWebhook = "",
+    string AgentEndedWebhook = "",
+    string WebhookSecret = "",
+    string ClinicPhone = "");
 
 public record VoiceTurnResponse(
     string AgentName,

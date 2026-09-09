@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, type AiSettings, type Doctor, type SystemStatus, type VoiceStatus } from "../api/client";
+import { specializationOptions } from "../data/specializations";
+import { api, type AiSettings, type Doctor, type ExotelNumber, type SystemStatus, type VoiceStatus } from "../api/client";
 
 const DAYS = [
   { value: 0, label: "Sunday" },
@@ -52,6 +53,8 @@ export function SettingsPage() {
   const [doctorError, setDoctorError] = useState("");
   const [system, setSystem] = useState<SystemStatus | null>(null);
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
+  const [exotelNumbers, setExotelNumbers] = useState<ExotelNumber[]>([]);
+  const [copied, setCopied] = useState("");
 
   async function load() {
     const [doc, settings, status, voiceStatus] = await Promise.all([
@@ -64,6 +67,12 @@ export function SettingsPage() {
     setAi(settings.data);
     setSystem(status.data);
     setVoice(voiceStatus.data);
+    try {
+      const phones = await api.get<ExotelNumber[]>("/voice/exotel/numbers");
+      setExotelNumbers(phones.data);
+    } catch {
+      setExotelNumbers([]);
+    }
   }
 
   useEffect(() => {
@@ -78,6 +87,11 @@ export function SettingsPage() {
       startTime: doctorForm.days[day.value].startTime,
       endTime: doctorForm.days[day.value].endTime,
     }));
+    if (!doctorForm.specialization.trim()) {
+      setDoctorError("Select a specialization.");
+      return;
+    }
+
     try {
       const payload = {
         name: doctorForm.name,
@@ -131,6 +145,12 @@ export function SettingsPage() {
     await api.put("/settings/ai", ai);
     setSaved("AI settings saved.");
     window.setTimeout(() => setSaved(""), 2500);
+  }
+
+  async function copyValue(value: string, label: string) {
+    await navigator.clipboard.writeText(value);
+    setCopied(label);
+    window.setTimeout(() => setCopied(""), 2000);
   }
 
   const selectedLanguages = (ai?.language ?? "")
@@ -200,7 +220,18 @@ export function SettingsPage() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label>Specialization</label>
-              <input value={doctorForm.specialization} onChange={(e) => setDoctorForm({ ...doctorForm, specialization: e.target.value })} />
+              <select
+                required
+                value={doctorForm.specialization}
+                onChange={(e) => setDoctorForm({ ...doctorForm, specialization: e.target.value })}
+              >
+                <option value="">Select specialization</option>
+                {specializationOptions(doctorForm.specialization).map((spec) => (
+                  <option key={spec} value={spec}>
+                    {spec}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label>Phone</label>
@@ -318,14 +349,67 @@ export function SettingsPage() {
       {ai && (
         <form onSubmit={saveAi} className="card space-y-3 p-5">
           <h2 className="font-display text-xl">AI agent settings</h2>
-          <p className="text-sm text-slate-500">These values drive the voice greeting, languages, and instructions sent to Sarvam AI.</p>
+          <p className="text-sm text-slate-500">
+            Saved here and sent to Sarvam through the On-Start agent-context webhook. Also copy welcome and
+            instructions into the Sarvam agent if that hook is not configured yet.
+          </p>
           {voice && (
             <div className="rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-600">
-              Phone stack: {voice.phoneReady ? "Exotel + Sarvam ready" : "add Sarvam:ApiKey"}. Exotel incoming:{" "}
-              {voice.exotelIncomingWebhook}
+              Live path: Exotel Voicebot → Sarvam. Portal receives bookings and call logs through the webhooks below.
             </div>
           )}
           {saved && <p className="rounded-xl bg-teal-50 px-3 py-2 text-sm text-teal-800">{saved}</p>}
+          {copied && <p className="rounded-xl bg-teal-50 px-3 py-2 text-sm text-teal-800">Copied {copied}</p>}
+          {voice && (
+            <div className="space-y-3 rounded-xl border border-slate-200 p-3">
+              <p className="text-sm font-medium text-slate-700">Go live with Exotel Voicebot + Sarvam</p>
+              <ol className="list-decimal space-y-1 pl-5 text-xs text-slate-600">
+                <li>
+                  In Sarvam Voice Agents open Deploy → Phone Numbers → Add Connection. Use Exotel account SID, API
+                  key, token, and <code>api.in.exotel.com</code>.
+                </li>
+                <li>
+                  Attach clinic number {voice.clinicPhone || "+918047283845"} to the Sarvam agent.
+                </li>
+                <li>
+                  In Exotel App Bazaar edit <strong>Anuj Clinic ExoM</strong>: Call Start → Voicebot only. Paste the
+                  Voicebot URL below. Recording on, single channel, MP3.
+                </li>
+                <li>Keep 08047283845 assigned to Anuj Clinic ExoM. Leave the trial PIN flow alone.</li>
+                <li>
+                  In the Sarvam agent add the On-Start URL so the live doctor list from the database is injected.
+                  Map On-Start fields <code>allowed_doctor_names</code> and <code>clinic_doctors</code>. Then add the
+                  tools and On-End URLs below. Availability body fields:{" "}
+                  <code>date</code>, <code>problem</code>, <code>doctor_name</code> (empty first; a name after they
+                  pick; <code>anyone</code> if they have no preference), <code>preferred_time</code>. In each tool
+                  replace the default “Request completed successfully” with the response template below, using{" "}
+                  <code>{"{{field}}"}</code> not <code>#field</code>. Then publish and activate that version.
+                </li>
+              </ol>
+              <CopyRow label="Voicebot URL" value={voice.sarvamVoicebotUrl ?? ""} onCopy={copyValue} />
+              <CopyRow label="On-Start agent context" value={voice.agentContextWebhook ?? ""} onCopy={copyValue} />
+              <CopyRow label="Tool: check_anuj_availability" value={voice.availabilityWebhook ?? ""} onCopy={copyValue} />
+              <CopyRow
+                label="Availability response template"
+                value="Say only these clinic doctors: {{doctors_to_say}}. {{spoken_prompt}} Do not invent any other name."
+                onCopy={copyValue}
+              />
+              <CopyRow label="Tool: book_anuj_appointment" value={voice.bookAppointmentWebhook ?? ""} onCopy={copyValue} />
+              <CopyRow
+                label="Booking response template"
+                value="booked={{booked}}. doctor={{doctor_name}}. {{message}} Confirm only if booked is true."
+                onCopy={copyValue}
+              />
+              <CopyRow label="On-End call-ended" value={voice.callEndedWebhook ?? ""} onCopy={copyValue} />
+              <CopyRow label="Webhook secret header X-Webhook-Secret" value={voice.webhookSecret ?? ""} onCopy={copyValue} />
+              {exotelNumbers.length > 0 && (
+                <p className="text-xs text-slate-500">
+                  ExoPhones: {exotelNumbers.map((phone) => phone.phoneNumber).join(", ")}. Assign the clinic number in
+                  App Bazaar; do not use Connect / custom ExoML on this trial.
+                </p>
+              )}
+            </div>
+          )}
           <div>
             <label>Agent name</label>
             <input value={ai.agentName} onChange={(e) => setAi({ ...ai, agentName: e.target.value })} />
@@ -384,6 +468,33 @@ export function SettingsPage() {
           </button>
         </form>
       )}
+    </div>
+  );
+}
+
+function CopyRow({
+  label,
+  value,
+  onCopy,
+}: {
+  label: string;
+  value: string;
+  onCopy: (value: string, label: string) => Promise<void>;
+}) {
+  return (
+    <div>
+      <p className="text-xs font-medium text-slate-600">{label}</p>
+      <div className="mt-1 flex gap-2">
+        <code className="min-w-0 flex-1 break-all rounded-lg bg-slate-50 px-2 py-1 text-xs text-slate-700">{value || "—"}</code>
+        <button
+          type="button"
+          className="shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600"
+          disabled={!value}
+          onClick={() => void onCopy(value, label)}
+        >
+          Copy
+        </button>
+      </div>
     </div>
   );
 }

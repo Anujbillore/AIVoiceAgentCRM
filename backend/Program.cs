@@ -123,6 +123,10 @@ builder.Services.AddSingleton<IVoiceSessionStore, VoiceSessionStore>();
 builder.Services.AddScoped<IVoiceAgentService, VoiceAgentService>();
 builder.Services.AddHttpClient<ISarvamAiService, SarvamAiService>();
 builder.Services.AddHttpClient<IExotelMediaService, ExotelMediaService>();
+builder.Services.AddHttpClient<IExotelPhoneService, ExotelPhoneService>();
+builder.Services.AddSingleton<InboundCallerContext>();
+builder.Services.AddScoped<ISarvamManagedService, SarvamManagedService>();
+WebhookSecretBootstrap.Ensure(builder.Configuration, builder.Environment);
 
 var app = builder.Build();
 

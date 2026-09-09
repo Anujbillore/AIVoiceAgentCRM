@@ -82,6 +82,7 @@ public class AppointmentService : IAppointmentService
             """;
 
         await _email.SendAsync(doctor.Email, "New Appointment Booking", body, cancellationToken);
+        await _hub.Clients.All.SendAsync("AppointmentChanged", ToDto(appointment, patient, doctor), cancellationToken);
 
         if (pushDashboard)
         {
@@ -98,15 +99,9 @@ public class AppointmentService : IAppointmentService
             _db.CallLogs.Add(callLog);
             await _db.SaveChangesAsync(cancellationToken);
 
-            var dto = new CallLogDto(
-                callLog.Id,
-                callLog.CallerName,
-                callLog.CallerPhone,
-                callLog.Summary,
-                callLog.ActionTaken,
-                callLog.Intent,
-                callLog.Transcript,
-                callLog.Timestamp);
+            appointment.Doctor = doctor;
+            appointment.Patient = patient;
+            var dto = CallLogDetails.ToDto(callLog, appointment);
             await _hub.Clients.All.SendAsync("CallSummaryAdded", dto, cancellationToken);
         }
 
@@ -137,7 +132,7 @@ public class AppointmentService : IAppointmentService
     public async Task<AppointmentPageDto> ListPagedAsync(int? doctorId, int? patientId, int page, int pageSize, CancellationToken cancellationToken = default)
     {
         page = page < 1 ? 1 : page;
-        pageSize = pageSize is < 1 or > 50 ? 8 : pageSize;
+        pageSize = pageSize is < 1 or > 200 ? 50 : pageSize;
 
         var query = _db.Appointments
             .Include(a => a.Patient)
@@ -178,7 +173,9 @@ public class AppointmentService : IAppointmentService
 
         appointment.Status = status;
         await _db.SaveChangesAsync(cancellationToken);
-        return ToDto(appointment, appointment.Patient, appointment.Doctor);
+        var dto = ToDto(appointment, appointment.Patient, appointment.Doctor);
+        await _hub.Clients.All.SendAsync("AppointmentChanged", dto, cancellationToken);
+        return dto;
     }
 
     public async Task<AppointmentDto> RescheduleAsync(int id, DateTime scheduledAt, CancellationToken cancellationToken = default)
@@ -189,6 +186,11 @@ public class AppointmentService : IAppointmentService
             .ThenInclude(d => d.Schedules)
             .FirstOrDefaultAsync(a => a.Id == id, cancellationToken)
             ?? throw new KeyNotFoundException("Appointment not found.");
+
+        if (AppointmentStatuses.IsCancelled(appointment.Status) || AppointmentStatuses.IsCompleted(appointment.Status))
+        {
+            throw new InvalidOperationException("This appointment can no longer be rescheduled.");
+        }
 
         var scheduledLocal = scheduledAt.Kind == DateTimeKind.Utc ? scheduledAt.ToLocalTime() : scheduledAt;
         EnsureAvailability(appointment.Doctor, scheduledLocal);
@@ -205,6 +207,7 @@ public class AppointmentService : IAppointmentService
         appointment.ScheduledAt = scheduledLocal;
         appointment.Status = "Scheduled";
         await _db.SaveChangesAsync(cancellationToken);
+        await _hub.Clients.All.SendAsync("AppointmentChanged", ToDto(appointment, appointment.Patient, appointment.Doctor), cancellationToken);
         await _email.SendAsync(
             appointment.Doctor.Email,
             "Appointment Rescheduled",

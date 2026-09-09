@@ -26,6 +26,7 @@ public class VoiceAgentService : IVoiceAgentService
     private readonly IExotelMediaService _exotel;
     private readonly IFinanceService _finance;
     private readonly IEmailService _email;
+    private readonly IConfiguration _config;
 
     public VoiceAgentService(
         AppDbContext db,
@@ -35,7 +36,8 @@ public class VoiceAgentService : IVoiceAgentService
         IVoiceSessionStore sessions,
         IExotelMediaService exotel,
         IFinanceService finance,
-        IEmailService email)
+        IEmailService email,
+        IConfiguration config)
     {
         _db = db;
         _ai = ai;
@@ -45,12 +47,19 @@ public class VoiceAgentService : IVoiceAgentService
         _exotel = exotel;
         _finance = finance;
         _email = email;
+        _config = config;
     }
 
     public async Task<VoiceStatusDto> GetStatusAsync(string publicBaseUrl, CancellationToken cancellationToken = default)
     {
         var settings = await _db.AiSettings.FirstAsync(cancellationToken);
         var root = publicBaseUrl.TrimEnd('/');
+        var secret = _config["SarvamManaged:WebhookSecret"] ?? string.Empty;
+        var clinicPhone = NormalizeClinicPhone(_config["Exotel:ClinicPhone"]);
+        var keyQuery = string.IsNullOrWhiteSpace(secret) ? "" : $"?key={secret}";
+        var phoneQuery = string.IsNullOrWhiteSpace(secret)
+            ? $"?phone={clinicPhone}"
+            : $"?phone={clinicPhone}&key={secret}";
         return new VoiceStatusDto(
             _ai.IsConfigured,
             settings.AgentName,
@@ -63,7 +72,15 @@ public class VoiceAgentService : IVoiceAgentService
             $"{root}/api/voice/exotel/audio",
             _exotel.IsConfigured,
             root,
-            _ai.IsConfigured);
+            _ai.IsConfigured && _exotel.IsConfigured,
+            "https://apps.sarvam.ai/api/app-runtime/channels/exotel",
+            $"{root}/api/webhooks/sarvam-managed/agent-context{keyQuery}",
+            $"{root}/api/webhooks/sarvam-managed/check-availability{phoneQuery}",
+            $"{root}/api/webhooks/sarvam-managed/book-appointment{phoneQuery}",
+            $"{root}/api/webhooks/sarvam-managed/call-ended{keyQuery}",
+            $"{root}/api/webhooks/sarvam-managed/agent-ended{keyQuery}",
+            secret,
+            clinicPhone);
     }
 
     public async Task<VoiceSessionDto> StartAsync(VoiceSessionStartRequest request, string? externalCallId = null, CancellationToken cancellationToken = default)
@@ -985,5 +1002,21 @@ public class VoiceAgentService : IVoiceAgentService
         }
 
         return DateTime.Now.AddDays(1).Date.AddHours(17);
+    }
+
+    private static string NormalizeClinicPhone(string? value)
+    {
+        var digits = System.Text.RegularExpressions.Regex.Replace(value ?? "918047283845", @"\D", "");
+        if (digits.Length == 10)
+        {
+            return "91" + digits;
+        }
+
+        if (digits.StartsWith("0") && digits.Length == 11)
+        {
+            return "91" + digits[1..];
+        }
+
+        return string.IsNullOrWhiteSpace(digits) ? "918047283845" : digits;
     }
 }

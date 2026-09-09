@@ -15,6 +15,10 @@
     "ApiKey": "your-exotel-api-key",
     "ApiToken": "your-exotel-api-token",
     "AccountSid": "your-exotel-account-sid",
-    "Subdomain": "api.exotel.com"
+    "Subdomain": "api.exotel.com",
+    "ClinicPhone": "+918047283845"
+  },
+  "SarvamManaged": {
+    "WebhookSecret": "generate-a-long-random-secret"
   }
 }

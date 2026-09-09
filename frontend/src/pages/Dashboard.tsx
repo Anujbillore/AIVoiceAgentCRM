@@ -14,6 +14,7 @@ import {
 } from "chart.js";
 import { Bar, Doughnut, Line } from "react-chartjs-2";
 import { CalendarCheck, CircleCheck, Clock3, Phone, PhoneForwarded, PhoneIncoming } from "lucide-react";
+import { Link } from "react-router-dom";
 import { api, TOKEN_KEY, type CallLog, type DashboardStats } from "../api/client";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Tooltip, Legend, Filler);
@@ -40,6 +41,7 @@ export function DashboardPage() {
   const [fromDate, setFromDate] = useState(isoDate(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)));
   const [toDate, setToDate] = useState(isoDate(new Date()));
   const [actionPage, setActionPage] = useState(1);
+  const [callbackBusy, setCallbackBusy] = useState<number | null>(null);
   const rangeRef = useRef({ from: fromDate, to: toDate, page: 1 });
   rangeRef.current = { from: fromDate, to: toDate, page: actionPage };
 
@@ -73,6 +75,16 @@ export function DashboardPage() {
     void load(weekStart, today, 1);
   }
 
+  async function finishCallback(id: number) {
+    setCallbackBusy(id);
+    try {
+      await api.post(`/dashboard/calls/${id}/callback/complete`);
+      await load();
+    } finally {
+      setCallbackBusy(null);
+    }
+  }
+
   useEffect(() => {
     void load();
     const token = localStorage.getItem(TOKEN_KEY);
@@ -99,6 +111,9 @@ export function DashboardPage() {
       setActionPage(1);
       void load(rangeRef.current.from, rangeRef.current.to, 1);
       window.setTimeout(() => setToast(null), 5000);
+    });
+    connection.on("AppointmentChanged", () => {
+      void load(rangeRef.current.from, rangeRef.current.to, rangeRef.current.page);
     });
 
     void connection.start();
@@ -175,7 +190,7 @@ export function DashboardPage() {
   const cards = [
     { label: "Calls in range", value: stats.callsToday, icon: Phone },
     { label: "AI containment", value: `${stats.containmentRate ?? 0}%`, icon: CircleCheck },
-    { label: "Escalated", value: stats.escalatedCalls ?? 0, icon: PhoneForwarded },
+    { label: "Forwarded", value: stats.escalatedCalls ?? 0, icon: PhoneForwarded },
     { label: "Callback queue", value: stats.callbackQueued ?? 0, icon: PhoneIncoming },
     { label: "Booked", value: stats.bookedAppointments, icon: CalendarCheck },
     { label: "Pending", value: stats.pendingAppointments, icon: Clock3 },
@@ -261,43 +276,84 @@ export function DashboardPage() {
       </section>
 
       <section className="card overflow-hidden">
-        <div className="border-b border-slate-100 px-5 py-4">
-          <h2 className="font-display text-xl">Action items</h2>
-          <p className="text-sm text-slate-500">Each inbound call is summarized by the AI agent and pushed here over SignalR.</p>
+        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <div>
+            <h2 className="font-display text-xl">Recent calls</h2>
+            <p className="text-sm text-slate-500">Who called, contact number, booked with, and summary.</p>
+          </div>
+          <Link className="text-sm font-semibold text-teal-700 hover:underline" to="/calls">
+            Open call log
+          </Link>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm">
             <thead className="bg-slate-50 text-slate-500">
               <tr>
-                <th className="px-5 py-3 font-medium">Caller</th>
-                <th className="px-5 py-3 font-medium">Summary</th>
-                <th className="px-5 py-3 font-medium">Action taken</th>
-                <th className="px-5 py-3 font-medium">Outcome</th>
-                <th className="px-5 py-3 font-medium">Timestamp</th>
+                <th className="px-5 py-3 font-medium">Who called</th>
+                <th className="px-5 py-3 font-medium">Contact number</th>
+                <th className="px-5 py-3 font-medium">Call time</th>
+                <th className="px-5 py-3 font-medium">Booked with</th>
+                <th className="px-5 py-3 font-medium">Call summary</th>
+                <th className="px-5 py-3 font-medium">Callback</th>
               </tr>
             </thead>
             <tbody>
               {stats.actionItems.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-slate-500">
-                    No action items in this date range.
+                  <td colSpan={6} className="px-5 py-8 text-center text-slate-500">
+                    No calls in this date range.
                   </td>
                 </tr>
               ) : (
                 stats.actionItems.map((item) => (
-                  <tr key={item.id} className="border-t border-slate-100">
-                    <td className="px-5 py-3 font-medium text-slate-800">{item.callerName}</td>
-                    <td className="px-5 py-3 text-slate-600">{item.summary}</td>
+                  <tr key={item.id} className="border-t border-slate-100 align-top">
+                    <td className="px-5 py-3 font-medium text-slate-800">{item.callerName || "—"}</td>
+                    <td className="px-5 py-3 text-slate-700">{item.callerPhone || "—"}</td>
+                    <td className="px-5 py-3 text-slate-600">{formatStamp(item.timestamp)}</td>
                     <td className="px-5 py-3">
-                      <span className="rounded-full bg-teal-50 px-2 py-1 text-xs font-semibold text-teal-800">{item.actionTaken}</span>
+                      {item.bookedDoctorName ? (
+                        <div>
+                          <p className="font-medium text-teal-800">{item.bookedDoctorName}</p>
+                          {item.appointmentTime && (
+                            <p className="text-xs text-slate-500">{formatStamp(item.appointmentTime)}</p>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-slate-400">Not booked</span>
+                      )}
+                    </td>
+                    <td className="px-5 py-3 text-slate-600">
+                      <p>{item.summary}</p>
+                      {item.actionTaken
+                        && !item.summary.toLowerCase().includes(item.actionTaken.toLowerCase())
+                        && !item.actionTaken.toLowerCase().startsWith("sarvam voicebot") && (
+                          <p className="mt-1 text-xs text-slate-500">{item.actionTaken}</p>
+                        )}
                     </td>
                     <td className="px-5 py-3">
-                      <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
-                        {item.outcome ?? "Contained"}
-                        {item.escalationReason ? ` · ${item.escalationReason}` : ""}
-                      </span>
+                      {item.callbackStatus === "Completed" ? (
+                        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
+                          Contacted
+                        </span>
+                      ) : item.needsPersonalContact ? (
+                        <div className="space-y-2">
+                          <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800">
+                            {item.callbackStatus === "Required" ? "Callback required" : "Callback requested"}
+                          </span>
+                          <button
+                            className="btn-ghost block text-xs"
+                            disabled={callbackBusy === item.id}
+                            onClick={() => void finishCallback(item.id)}
+                          >
+                            Mark done
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="rounded-full bg-teal-50 px-2 py-1 text-xs font-semibold text-teal-800">
+                          Fine
+                        </span>
+                      )}
                     </td>
-                    <td className="px-5 py-3 text-slate-500">{formatStamp(item.timestamp)}</td>
                   </tr>
                 ))
               )}

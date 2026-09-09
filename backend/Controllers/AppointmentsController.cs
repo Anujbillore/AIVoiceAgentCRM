@@ -63,18 +63,28 @@ public class AppointmentsController : ControllerBase
     }
 
     [HttpPatch("{id:int}/status")]
-    [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
     public async Task<ActionResult<AppointmentDto>> UpdateStatus(int id, [FromBody] StatusRequest body, CancellationToken cancellationToken)
     {
         try
         {
-            if (_current.IsDoctor)
+            var denied = await DenyIfNotOwnerAsync(id, cancellationToken);
+            if (denied is not null)
             {
-                var ownId = await _current.GetDoctorIdAsync(cancellationToken);
-                var list = await _appointments.ListAsync(ownId, null, cancellationToken);
-                if (list.All(a => a.Id != id))
+                return denied;
+            }
+
+            if (_current.IsPatient)
+            {
+                if (!string.Equals(body.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
                 {
-                    return Forbid();
+                    return BadRequest(new { message = "Patients can only cancel their own appointments." });
+                }
+
+                var own = await _appointments.ListAsync(null, await _current.GetPatientIdAsync(cancellationToken), cancellationToken);
+                var current = own.FirstOrDefault(a => a.Id == id);
+                if (current is not null && AppointmentStatuses.IsCompleted(current.Status))
+                {
+                    return BadRequest(new { message = "This visit is already completed." });
                 }
             }
 
@@ -86,5 +96,52 @@ public class AppointmentsController : ControllerBase
         }
     }
 
+    [HttpPatch("{id:int}/reschedule")]
+    public async Task<ActionResult<AppointmentDto>> Reschedule(int id, [FromBody] RescheduleRequest body, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var denied = await DenyIfNotOwnerAsync(id, cancellationToken);
+            if (denied is not null)
+            {
+                return denied;
+            }
+
+            return await _appointments.RescheduleAsync(id, body.ScheduledAt, cancellationToken);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     public record StatusRequest(string Status);
+
+    private async Task<ActionResult?> DenyIfNotOwnerAsync(int appointmentId, CancellationToken cancellationToken)
+    {
+        if (_current.IsAdmin)
+        {
+            return null;
+        }
+
+        if (_current.IsDoctor)
+        {
+            var ownId = await _current.GetDoctorIdAsync(cancellationToken);
+            var list = await _appointments.ListAsync(ownId, null, cancellationToken);
+            return list.Any(a => a.Id == appointmentId) ? null : Forbid();
+        }
+
+        if (_current.IsPatient)
+        {
+            var ownId = await _current.GetPatientIdAsync(cancellationToken);
+            var list = await _appointments.ListAsync(null, ownId, cancellationToken);
+            return list.Any(a => a.Id == appointmentId) ? null : Forbid();
+        }
+
+        return Forbid();
+    }
 }

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { ArrowLeft, FolderOpen, Phone, Stethoscope } from "lucide-react";
+import { ArrowLeft, ChevronDown, FolderOpen, Stethoscope } from "lucide-react";
 import { api, type Patient, type PatientDetail } from "../api/client";
 import { PatientChart } from "../components/PatientChart";
+import { StatusBadge } from "../components/StatusBadge";
+import { formatStamp } from "../lib/format";
 import { useAuth } from "../context/AuthContext";
 
 const empty = {
@@ -16,6 +18,7 @@ const empty = {
   emergencyName: "",
   emergencyPhone: "",
   allergies: "",
+  password: "",
 };
 
 function initials(name: string) {
@@ -38,6 +41,8 @@ export function PatientsPage() {
   const [detail, setDetail] = useState<PatientDetail | null>(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [detailsById, setDetailsById] = useState<Record<number, PatientDetail>>({});
 
   async function load() {
     const { data } = await api.get<Patient[]>("/patients");
@@ -60,6 +65,18 @@ export function PatientsPage() {
       setDetail(null);
     }
   }, [selectedId]);
+
+  async function toggleExpand(id: number) {
+    if (expandedId === id) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(id);
+    if (!detailsById[id]) {
+      const { data } = await api.get<PatientDetail>(`/patients/${id}/details`);
+      setDetailsById((current) => ({ ...current, [id]: data }));
+    }
+  }
 
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -88,8 +105,9 @@ export function PatientsPage() {
       if (selectedId) {
         await loadDetail(selectedId);
       }
-    } catch {
-      setError("Could not save patient.");
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { message?: string } } };
+      setError(axiosErr.response?.data?.message ?? "Could not save patient.");
     }
   }
 
@@ -146,6 +164,7 @@ export function PatientsPage() {
                       emergencyName: patient.emergencyName,
                       emergencyPhone: patient.emergencyPhone,
                       allergies: patient.allergies,
+                      password: "",
                     });
                     setSelectedId(null);
                   }}
@@ -211,6 +230,17 @@ export function PatientsPage() {
             <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
           </div>
           <div>
+            <label>Portal password</label>
+            <input
+              type="password"
+              value={form.password}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+              placeholder={editingId ? "Leave blank to keep current" : "Set so they can sign in"}
+              autoComplete="new-password"
+            />
+            <p className="mt-1 text-xs text-slate-500">They sign in with this email and password. Use at least 6 characters with upper, lower, and a number (example Patient@123).</p>
+          </div>
+          <div>
             <label>Address</label>
             <input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
           </div>
@@ -266,61 +296,107 @@ export function PatientsPage() {
       )}
 
       <div className="space-y-4">
-        <div className="card p-5">
-          <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="card overflow-hidden">
+          <div className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-100 px-5 py-4">
             <div>
-              <h2 className="font-display text-xl">Patient Management</h2>
-              <p className="text-sm text-slate-500">Click a card to open the patient chart — visits, records, and billing.</p>
+              <h2 className="font-display text-xl">Patient profiles</h2>
+              <p className="text-sm text-slate-500">{patients.length} total · expand a row for booked with and call summary</p>
             </div>
             <input
-              className="max-w-xs"
-              placeholder="Search UHID, name, phone, or email"
+              className="max-w-sm"
+              placeholder="Search by name, email, phone..."
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-        </div>
 
-        {filtered.length === 0 ? (
-          <div className="card px-5 py-10 text-center text-slate-500">No patients match that search.</div>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {filtered.map((patient) => (
-              <button
-                key={patient.id}
-                type="button"
-                className="card p-5 text-left transition hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-md"
-                onClick={() => setSelectedId(patient.id)}
-              >
-                <div className="flex items-start gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-100 font-display text-lg text-teal-800">
-                    {initials(patient.name)}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="truncate font-display text-lg">{patient.name}</p>
-                    <p className="text-sm text-slate-500">
-                      {patient.uhid || "No UHID"} · {patient.age ? `${patient.age} yrs` : "Age not set"}
-                    </p>
-                  </div>
-                </div>
-                <p className="mt-4 flex items-center gap-2 text-sm text-slate-600">
-                  <Phone className="h-3.5 w-3.5" />
-                  {patient.contact}
-                </p>
-                <div className="mt-4 flex gap-2">
-                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">
-                    <Stethoscope className="h-3 w-3" />
-                    {patient.visitCount} visits
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-teal-50 px-2 py-1 text-xs text-teal-800">
-                    <FolderOpen className="h-3 w-3" />
-                    {patient.documentCount} docs
-                  </span>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
+          {filtered.length === 0 ? (
+            <p className="px-5 py-10 text-center text-slate-500">No patients match that search.</p>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {filtered.map((patient) => {
+                const open = expandedId === patient.id;
+                const detailRow = detailsById[patient.id];
+                const lastVisit = detailRow?.visits
+                  .slice()
+                  .sort((a, b) => +new Date(b.scheduledAt) - +new Date(a.scheduledAt))[0];
+                return (
+                  <article key={patient.id} className="px-5 py-4">
+                    <button type="button" className="flex w-full items-start gap-4 text-left" onClick={() => void toggleExpand(patient.id)}>
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-teal-100 font-display text-lg text-teal-800">
+                        {initials(patient.name)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-display text-lg text-slate-900">{patient.name}</p>
+                        <p className="text-sm text-slate-500">{patient.email || "No email"} · {patient.contact || "No number"}</p>
+                        <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
+                          {patient.hasLogin && (
+                            <span className="rounded-full bg-teal-700 px-2 py-1 font-semibold text-white">Portal login</span>
+                          )}
+                          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1">
+                            <Stethoscope className="h-3 w-3" />
+                            {patient.visitCount} appointments
+                          </span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-teal-50 px-2 py-1 text-teal-800">
+                            <FolderOpen className="h-3 w-3" />
+                            {patient.documentCount} docs
+                          </span>
+                          {lastVisit && <span>Last visit {formatStamp(lastVisit.scheduledAt)}</span>}
+                        </div>
+                      </div>
+                      <ChevronDown className={`mt-1 h-5 w-5 shrink-0 text-slate-400 transition ${open ? "rotate-180" : ""}`} />
+                    </button>
+
+                    {open && (
+                      <div className="mt-4 rounded-2xl bg-slate-50 p-4">
+                        {!detailRow ? (
+                          <p className="text-sm text-slate-500">Loading visit history…</p>
+                        ) : (
+                          <>
+                            <div className="mb-4 grid gap-3 sm:grid-cols-2">
+                              <p className="text-sm"><span className="text-slate-500">Contact number:</span> {patient.contact || "—"}</p>
+                              <p className="text-sm"><span className="text-slate-500">Email:</span> {patient.email || "—"}</p>
+                            </div>
+                            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Appointment history</p>
+                            {detailRow.visits.length === 0 ? (
+                              <p className="text-sm text-slate-500">No visits yet.</p>
+                            ) : (
+                              <div className="overflow-x-auto rounded-xl bg-white">
+                                <table className="min-w-full text-left text-sm">
+                                  <thead className="text-slate-500">
+                                    <tr>
+                                      <th className="px-3 py-2 font-medium">Date & time</th>
+                                      <th className="px-3 py-2 font-medium">Booked with</th>
+                                      <th className="px-3 py-2 font-medium">Call summary</th>
+                                      <th className="px-3 py-2 font-medium">Status</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {detailRow.visits.map((visit) => (
+                                      <tr key={visit.id} className="border-t border-slate-100">
+                                        <td className="px-3 py-2">{formatStamp(visit.scheduledAt)}</td>
+                                        <td className="px-3 py-2">{visit.doctorName}</td>
+                                        <td className="max-w-xs px-3 py-2 text-slate-600">{visit.notes || "—"}</td>
+                                        <td className="px-3 py-2"><StatusBadge status={visit.status} /></td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                            <button className="btn-primary mt-4" onClick={() => setSelectedId(patient.id)}>
+                              Open full chart
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

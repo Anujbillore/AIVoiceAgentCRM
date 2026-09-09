@@ -58,6 +58,11 @@ public class AppDbContext : IdentityDbContext<ApplicationUser>
                 .OnDelete(DeleteBehavior.SetNull);
         });
 
+        builder.Entity<CallLog>(entity =>
+        {
+            entity.HasIndex(c => c.ExternalId);
+        });
+
         builder.Entity<Appointment>(entity =>
         {
             entity.HasOne(a => a.Patient)

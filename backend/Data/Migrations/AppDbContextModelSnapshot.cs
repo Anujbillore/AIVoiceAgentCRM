@@ -231,7 +231,13 @@ namespace AiVoicePortal.Api.Data.Migrations
                     b.Property<int?>("PatientId")
                         .HasColumnType("integer");
 
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("ExternalId");
 
                     b.ToTable("CallLogs");
                 });

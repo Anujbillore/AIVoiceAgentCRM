@@ -28,6 +28,7 @@ public class PatientsController : ControllerBase
     private readonly IWebHostEnvironment _env;
     private readonly UserManager<ApplicationUser> _users;
     private readonly IHubContext<DashboardHub> _hub;
+    private readonly IClinicNotificationService _notifications;
 
     public PatientsController(
         AppDbContext db,
@@ -36,7 +37,8 @@ public class PatientsController : ControllerBase
         ISarvamAiService ai,
         IWebHostEnvironment env,
         UserManager<ApplicationUser> users,
-        IHubContext<DashboardHub> hub)
+        IHubContext<DashboardHub> hub,
+        IClinicNotificationService notifications)
     {
         _db = db;
         _current = current;
@@ -45,6 +47,7 @@ public class PatientsController : ControllerBase
         _env = env;
         _users = users;
         _hub = hub;
+        _notifications = notifications;
     }
 
     [HttpGet]
@@ -82,7 +85,7 @@ public class PatientsController : ControllerBase
             return NotFound(new { message = "Patient profile not found." });
         }
 
-        Apply(patient, request);
+        ApplySelf(patient, request);
         await _db.SaveChangesAsync(cancellationToken);
         return await ToDtoAsync(patient, cancellationToken);
     }
@@ -186,7 +189,11 @@ public class PatientsController : ControllerBase
         }
 
         var calls = await _db.CallLogs
-            .Where(c => c.PatientId == patient.Id || c.CallerPhone == patient.Contact || c.CallerName == patient.Name)
+            .Where(c =>
+                c.PatientId == patient.Id
+                && (c.Intent == "Support"
+                    || c.ActionTaken.Contains("Patient portal support")
+                    || c.ActionTaken.Contains("support request")))
             .OrderByDescending(c => c.Timestamp)
             .Take(50)
             .ToListAsync(cancellationToken);
@@ -238,6 +245,14 @@ public class PatientsController : ControllerBase
             "CallbackQueued",
             new { callerName = patient.Name, callerPhone = patient.Contact, summary = message },
             cancellationToken);
+        await _notifications.PublishAsync(
+            "New support ticket",
+            $"{patient.Name} ({patient.Contact}): {message}",
+            "Support",
+            "Staff",
+            relatedType: "Support",
+            relatedId: call.Id,
+            cancellationToken: cancellationToken);
         return CallLogDetails.ToDto(call, null, callback);
     }
 
@@ -530,6 +545,16 @@ public class PatientsController : ControllerBase
         patient.Email = request.Email ?? string.Empty;
         patient.Address = request.Address ?? string.Empty;
         patient.Notes = request.Notes ?? string.Empty;
+        ApplyClinical(patient, request);
+    }
+
+    private static void ApplySelf(Patient patient, PatientRequest request)
+    {
+        patient.Name = request.Name;
+        patient.Age = request.Age;
+        patient.Contact = request.Contact;
+        patient.Email = request.Email ?? string.Empty;
+        patient.Address = request.Address ?? string.Empty;
         ApplyClinical(patient, request);
     }
 

@@ -16,17 +16,36 @@ public class DoctorsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly UserManager<ApplicationUser> _users;
+    private readonly ICurrentUserService _current;
 
-    public DoctorsController(AppDbContext db, UserManager<ApplicationUser> users)
+    public DoctorsController(AppDbContext db, UserManager<ApplicationUser> users, ICurrentUserService current)
     {
         _db = db;
         _users = users;
+        _current = current;
     }
 
     [HttpGet]
     public async Task<ActionResult<List<DoctorDto>>> List(CancellationToken cancellationToken)
     {
-        var doctors = await _db.Doctors.Include(d => d.Schedules).OrderBy(d => d.Name).ToListAsync(cancellationToken);
+        var query = _db.Doctors.Include(d => d.Schedules).AsQueryable();
+        if (_current.IsDoctor)
+        {
+            var ownId = await _current.GetDoctorIdAsync(cancellationToken);
+            if (!ownId.HasValue)
+            {
+                return new List<DoctorDto>();
+            }
+
+            query = query.Where(d => d.Id == ownId);
+        }
+
+        var doctors = await query.OrderBy(d => d.Name).ToListAsync(cancellationToken);
+        if (_current.IsPatient)
+        {
+            return doctors.Select(d => ToPublicDto(d)).ToList();
+        }
+
         return doctors.Select(ToDto).ToList();
     }
 
@@ -221,6 +240,20 @@ public class DoctorsController : ControllerBase
             d.Phone,
             d.IsActive,
             !string.IsNullOrEmpty(d.UserId),
+            d.Schedules
+                .OrderBy(s => s.DayOfWeek)
+                .Select(s => new ScheduleDto(s.Id, s.DayOfWeek, s.StartTime.ToString(@"hh\:mm"), s.EndTime.ToString(@"hh\:mm")))
+                .ToList());
+
+    private static DoctorDto ToPublicDto(Doctor d) =>
+        new(
+            d.Id,
+            d.Name,
+            string.Empty,
+            d.Specialization,
+            string.Empty,
+            d.IsActive,
+            false,
             d.Schedules
                 .OrderBy(s => s.DayOfWeek)
                 .Select(s => new ScheduleDto(s.Id, s.DayOfWeek, s.StartTime.ToString(@"hh\:mm"), s.EndTime.ToString(@"hh\:mm")))

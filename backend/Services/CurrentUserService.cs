@@ -37,19 +37,59 @@ public class CurrentUserService : ICurrentUserService
 
     public async Task<int?> GetDoctorIdAsync(CancellationToken cancellationToken = default)
     {
-        var id = await _db.Doctors
-            .Where(d => (UserId != null && d.UserId == UserId) || (Email != null && d.Email == Email))
-            .Select(d => d.Id)
-            .FirstOrDefaultAsync(cancellationToken);
-        return id == 0 ? null : id;
+        if (!string.IsNullOrWhiteSpace(UserId))
+        {
+            var byUser = await _db.Doctors
+                .Where(d => d.UserId == UserId)
+                .Select(d => d.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (byUser != 0)
+            {
+                return byUser;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(Email))
+        {
+            var byEmail = await _db.Doctors
+                .Where(d => d.Email == Email)
+                .Select(d => d.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (byEmail != 0)
+            {
+                return byEmail;
+            }
+        }
+
+        return null;
     }
 
     public async Task<int?> GetPatientIdAsync(CancellationToken cancellationToken = default)
     {
-        var id = await _db.Patients
-            .Where(p => (UserId != null && p.UserId == UserId) || (Email != null && p.Email == Email))
-            .Select(p => p.Id)
-            .FirstOrDefaultAsync(cancellationToken);
-        return id == 0 ? null : id;
+        if (!string.IsNullOrWhiteSpace(UserId))
+        {
+            var byUser = await _db.Patients
+                .Where(p => p.UserId == UserId)
+                .Select(p => p.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (byUser != 0)
+            {
+                return byUser;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(Email))
+        {
+            var byEmail = await _db.Patients
+                .Where(p => p.Email == Email)
+                .Select(p => p.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (byEmail != 0)
+            {
+                return byEmail;
+            }
+        }
+
+        return null;
     }
 }

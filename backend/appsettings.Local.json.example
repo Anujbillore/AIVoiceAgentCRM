@@ -20,5 +20,20 @@
   },
   "SarvamManaged": {
     "WebhookSecret": "generate-a-long-random-secret"
+  },
+  "Email": {
+    "SmtpHost": "smtp.gmail.com",
+    "SmtpPort": 587,
+    "From": "billoreanuj24@gmail.com",
+    "Username": "billoreanuj24@gmail.com",
+    "Password": "your-gmail-app-password",
+    "EnableSsl": true,
+    "SendGridApiKey": "",
+    "OverrideRecipients": true,
+    "TestDoctorTo": "anujbillore112@gmail.com",
+    "TestPatientTo": "anujbillore112@gmail.com",
+    "TestPatientName": "Anuj Billore",
+    "ClinicAddress": "Anuj Clinic, Andheri, Mumbai",
+    "PublicApiUrl": "http://localhost:5147"
   }
 }

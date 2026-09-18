@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { Layout } from "./components/Layout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { SuccessPopupProvider } from "./components/SuccessPopup";
 import { LoginPage } from "./pages/Login";
 import { RegisterPage } from "./pages/Register";
 import { ForgotPasswordPage } from "./pages/ForgotPassword";
@@ -25,90 +26,92 @@ function GuestOnly({ children }: { children: ReactNode }) {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route
-            path="/login"
-            element={
-              <GuestOnly>
-                <LoginPage />
-              </GuestOnly>
-            }
-          />
-          <Route
-            path="/register"
-            element={
-              <GuestOnly>
-                <RegisterPage />
-              </GuestOnly>
-            }
-          />
-          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-          <Route path="/reset-password" element={<ResetPasswordPage />} />
-          <Route
-            element={
-              <ProtectedRoute>
-                <Layout />
-              </ProtectedRoute>
-            }
-          >
+      <SuccessPopupProvider>
+        <BrowserRouter>
+          <Routes>
             <Route
-              path="/"
+              path="/login"
               element={
-                <ProtectedRoute roles={["Admin", "Doctor"]}>
-                  <DashboardPage />
-                </ProtectedRoute>
+                <GuestOnly>
+                  <LoginPage />
+                </GuestOnly>
               }
             />
             <Route
-              path="/calls"
+              path="/register"
               element={
-                <ProtectedRoute roles={["Admin", "Doctor"]}>
-                  <CallLogPage />
-                </ProtectedRoute>
+                <GuestOnly>
+                  <RegisterPage />
+                </GuestOnly>
               }
             />
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route
-              path="/patients"
               element={
-                <ProtectedRoute roles={["Admin", "Doctor"]}>
-                  <PatientsPage />
+                <ProtectedRoute>
+                  <Layout />
                 </ProtectedRoute>
               }
-            />
-            <Route
-              path="/profile"
-              element={
-                <ProtectedRoute roles={["Patient"]}>
-                  <ProfilePage />
-                </ProtectedRoute>
-              }
-            />
-            <Route path="/appointments" element={<AppointmentsPage />} />
-            <Route path="/support" element={<SupportPage />} />
-            <Route
-              path="/notifications"
-              element={
-                <ProtectedRoute roles={["Admin", "Doctor"]}>
-                  <NotificationsPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route path="/billing" element={<Navigate to="/" replace />} />
-            <Route path="/insurance" element={<Navigate to="/" replace />} />
-            <Route path="/payments" element={<Navigate to="/" replace />} />
-            <Route path="/voice" element={<Navigate to="/" replace />} />
-            <Route
-              path="/settings"
-              element={
-                <ProtectedRoute roles={["Admin"]}>
-                  <SettingsPage />
-                </ProtectedRoute>
-              }
-            />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+            >
+              <Route
+                path="/"
+                element={
+                  <ProtectedRoute roles={["Admin", "Doctor"]}>
+                    <DashboardPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/calls"
+                element={
+                  <ProtectedRoute roles={["Admin", "Doctor"]}>
+                    <CallLogPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/patients"
+                element={
+                  <ProtectedRoute roles={["Admin", "Doctor"]}>
+                    <PatientsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/profile"
+                element={
+                  <ProtectedRoute roles={["Patient"]}>
+                    <ProfilePage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="/appointments" element={<AppointmentsPage />} />
+              <Route path="/support" element={<SupportPage />} />
+              <Route
+                path="/notifications"
+                element={
+                  <ProtectedRoute roles={["Admin", "Doctor"]}>
+                    <NotificationsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="/billing" element={<Navigate to="/" replace />} />
+              <Route path="/insurance" element={<Navigate to="/" replace />} />
+              <Route path="/payments" element={<Navigate to="/" replace />} />
+              <Route path="/voice" element={<Navigate to="/" replace />} />
+              <Route
+                path="/settings"
+                element={
+                  <ProtectedRoute roles={["Admin"]}>
+                    <SettingsPage />
+                  </ProtectedRoute>
+                }
+              />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </SuccessPopupProvider>
     </AuthProvider>
   );
 }

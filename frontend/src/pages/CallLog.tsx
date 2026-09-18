@@ -3,8 +3,10 @@ import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr";
 import { api, TOKEN_KEY, type CallLog, type DashboardStats } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
 import { formatStamp, isoDate } from "../lib/format";
+import { useAuth } from "../context/AuthContext";
 
 export function CallLogPage() {
+  const { user } = useAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [query, setQuery] = useState("");
@@ -13,7 +15,7 @@ export function CallLogPage() {
   async function load() {
     const today = isoDate(new Date());
     const from = isoDate(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000));
-    const { data } = await api.get<DashboardStats>("/dashboard", { params: { from, to: today, page: 1, pageSize: 50 } });
+    const { data } = await api.get<DashboardStats>("/dashboard", { params: { from, to: today, page: 1, pageSize: 100 } });
     setStats(data);
     setSelectedId((current) => current ?? data.actionItems[0]?.id ?? null);
   }
@@ -68,7 +70,9 @@ export function CallLogPage() {
         </div>
         <div className="max-h-[70vh] overflow-y-auto">
           {items.length === 0 ? (
-            <p className="px-4 py-8 text-sm text-slate-500">No calls in the last 30 days.</p>
+            <p className="px-4 py-8 text-sm text-slate-500">
+              {user?.role === "Doctor" ? "No calls for appointments booked with you." : "No calls in the last 30 days."}
+            </p>
           ) : (
             items.map((item) => (
               <button
@@ -117,6 +121,10 @@ function CallDetail({ item, busy, onDone }: { item: CallLog; busy: boolean; onDo
         <Field
           label="Appointment time"
           value={item.appointmentTime ? formatStamp(item.appointmentTime) : "—"}
+        />
+        <Field
+          label="Minutes used"
+          value={item.durationSeconds && item.durationSeconds > 0 ? `${Math.round((item.durationSeconds / 60) * 10) / 10} min` : "—"}
         />
       </div>
       <div>

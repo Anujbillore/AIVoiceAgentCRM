@@ -60,6 +60,7 @@ public class PaymentsController : ControllerBase
             return patientId;
         }
 
-        return await _current.GetPatientIdAsync(cancellationToken);
+        var ownId = await _current.GetPatientIdAsync(cancellationToken);
+        return ownId ?? -1;
     }
 }

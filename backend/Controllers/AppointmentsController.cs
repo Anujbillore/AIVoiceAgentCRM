@@ -31,11 +31,19 @@ public class AppointmentsController : ControllerBase
         if (_current.IsDoctor)
         {
             doctorId = await _current.GetDoctorIdAsync(cancellationToken);
+            if (!doctorId.HasValue)
+            {
+                return new AppointmentPageDto([], 0, page, pageSize);
+            }
         }
 
         if (_current.IsPatient)
         {
             patientId = await _current.GetPatientIdAsync(cancellationToken);
+            if (!patientId.HasValue)
+            {
+                return new AppointmentPageDto([], 0, page, pageSize);
+            }
         }
 
         return await _appointments.ListPagedAsync(doctorId, patientId, page, pageSize, cancellationToken);
@@ -46,6 +54,13 @@ public class AppointmentsController : ControllerBase
     {
         try
         {
+            if (_current.IsDoctor)
+            {
+                var ownDoctorId = await _current.GetDoctorIdAsync(cancellationToken)
+                    ?? throw new InvalidOperationException("Doctor profile not found.");
+                request = request with { DoctorId = ownDoctorId };
+            }
+
             if (_current.IsPatient)
             {
                 var ownId = await _current.GetPatientIdAsync(cancellationToken)
@@ -80,7 +95,13 @@ public class AppointmentsController : ControllerBase
                     return BadRequest(new { message = "Patients can only cancel their own appointments." });
                 }
 
-                var own = await _appointments.ListAsync(null, await _current.GetPatientIdAsync(cancellationToken), cancellationToken);
+                var ownId = await _current.GetPatientIdAsync(cancellationToken);
+                if (!ownId.HasValue)
+                {
+                    return Forbid();
+                }
+
+                var own = await _appointments.ListAsync(null, ownId, cancellationToken);
                 var current = own.FirstOrDefault(a => a.Id == id);
                 if (current is not null && AppointmentStatuses.IsCompleted(current.Status))
                 {
@@ -119,7 +140,67 @@ public class AppointmentsController : ControllerBase
         }
     }
 
+    [HttpGet("{id:int}/email/{decision}")]
+    [AllowAnonymous]
+    public async Task<IActionResult> DecideFromEmail(int id, string decision, [FromQuery] string? token, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!string.Equals(decision, "approve", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(decision, "reject", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ContentResult
+                {
+                    StatusCode = 400,
+                    ContentType = "text/html",
+                    Content = EmailResultPage("Unknown action", "This appointment link is not valid.")
+                };
+            }
+
+            await _appointments.DecideFromEmailAsync(id, decision, token, cancellationToken);
+            var approved = decision.Equals("approve", StringComparison.OrdinalIgnoreCase);
+            return Content(
+                EmailResultPage(
+                    approved ? "Appointment approved" : "Appointment rejected",
+                    approved
+                        ? "The appointment is confirmed. The clinic portal has been updated."
+                        : "The appointment has been cancelled."),
+                "text/html");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Content(EmailResultPage("Invalid link", "This approval link is invalid or expired."), "text/html");
+        }
+        catch (KeyNotFoundException)
+        {
+            return Content(EmailResultPage("Not found", "That appointment no longer exists."), "text/html");
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Content(EmailResultPage("Could not update", ex.Message), "text/html");
+        }
+    }
+
     public record StatusRequest(string Status);
+
+    private static string EmailResultPage(string title, string message)
+    {
+        var safeTitle = System.Net.WebUtility.HtmlEncode(title);
+        var safeMessage = System.Net.WebUtility.HtmlEncode(message);
+        return $"""
+        <!doctype html>
+        <html>
+        <head><meta charset="utf-8"><title>{safeTitle} - Anuj Clinic</title></head>
+        <body style="font-family:Arial,sans-serif;background:#f8fafc;padding:48px;color:#0f172a">
+          <div style="max-width:480px;margin:auto;background:#fff;border-radius:16px;padding:32px;border:1px solid #e2e8f0">
+            <h1 style="font-size:22px;margin:0 0 12px">{safeTitle}</h1>
+            <p style="margin:0;color:#475569">{safeMessage}</p>
+            <p style="margin:24px 0 0;color:#94a3b8;font-size:12px">Anuj Clinic</p>
+          </div>
+        </body>
+        </html>
+        """;
+    }
 
     private async Task<ActionResult?> DenyIfNotOwnerAsync(int appointmentId, CancellationToken cancellationToken)
     {
@@ -131,6 +212,11 @@ public class AppointmentsController : ControllerBase
         if (_current.IsDoctor)
         {
             var ownId = await _current.GetDoctorIdAsync(cancellationToken);
+            if (!ownId.HasValue)
+            {
+                return Forbid();
+            }
+
             var list = await _appointments.ListAsync(ownId, null, cancellationToken);
             return list.Any(a => a.Id == appointmentId) ? null : Forbid();
         }
@@ -138,6 +224,11 @@ public class AppointmentsController : ControllerBase
         if (_current.IsPatient)
         {
             var ownId = await _current.GetPatientIdAsync(cancellationToken);
+            if (!ownId.HasValue)
+            {
+                return Forbid();
+            }
+
             var list = await _appointments.ListAsync(null, ownId, cancellationToken);
             return list.Any(a => a.Id == appointmentId) ? null : Forbid();
         }

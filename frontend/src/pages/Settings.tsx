@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { specializationOptions } from "../data/specializations";
 import { api, type AiSettings, type Doctor, type ExotelNumber, type SystemStatus, type VoiceStatus } from "../api/client";
+import { useSuccessPopup } from "../components/SuccessPopup";
 
 const DAYS = [
   { value: 0, label: "Sunday" },
@@ -45,6 +46,7 @@ const emptyDoctor = {
 };
 
 export function SettingsPage() {
+  const { showSuccess } = useSuccessPopup();
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [ai, setAi] = useState<AiSettings | null>(null);
   const [doctorForm, setDoctorForm] = useState(emptyDoctor);
@@ -55,6 +57,9 @@ export function SettingsPage() {
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
   const [exotelNumbers, setExotelNumbers] = useState<ExotelNumber[]>([]);
   const [copied, setCopied] = useState("");
+  const [smtpPassword, setSmtpPassword] = useState("");
+  const [emailError, setEmailError] = useState("");
+  const [emailSaving, setEmailSaving] = useState(false);
 
   async function load() {
     const [doc, settings, status, voiceStatus] = await Promise.all([
@@ -78,6 +83,24 @@ export function SettingsPage() {
   useEffect(() => {
     void load();
   }, []);
+
+  async function saveSmtp(e: FormEvent) {
+    e.preventDefault();
+    setEmailError("");
+    setEmailSaving(true);
+    try {
+      await api.put("/settings/email", { password: smtpPassword });
+      setSmtpPassword("");
+      showSuccess("Details Submitted");
+      setSaved("Booking emails were resent to anujbillore112@gmail.com from billoreanuj24@gmail.com.");
+      await load();
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { message?: string } } };
+      setEmailError(axiosErr.response?.data?.message ?? "Could not send email. Check the Gmail App Password.");
+    } finally {
+      setEmailSaving(false);
+    }
+  }
 
   async function saveDoctor(e: FormEvent) {
     e.preventDefault();
@@ -106,6 +129,7 @@ export function SettingsPage() {
       else await api.post("/doctors", payload);
       setDoctorForm(emptyDoctor);
       setEditingId(null);
+      showSuccess("Details Submitted");
       await load();
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { message?: string } } };
@@ -144,6 +168,7 @@ export function SettingsPage() {
     if (!ai) return;
     await api.put("/settings/ai", ai);
     setSaved("AI settings saved.");
+    showSuccess("Details Submitted");
     window.setTimeout(() => setSaved(""), 2500);
   }
 
@@ -194,6 +219,49 @@ export function SettingsPage() {
           </div>
         </section>
       )}
+      <section className="card xl:col-span-2 p-5">
+        <form onSubmit={saveSmtp} className="space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="font-display text-xl">Appointment emails</h2>
+              <p className="text-sm text-slate-500">
+                Mail always sends from <span className="font-medium text-slate-700">{system?.fromEmail ?? "billoreanuj24@gmail.com"}</span>.
+                Test doctor and patient mail goes to{" "}
+                <span className="font-medium text-slate-700">{system?.testInbox ?? "anujbillore112@gmail.com"}</span>.
+              </p>
+            </div>
+            <span
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                system?.smtpConfigured ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"
+              }`}
+            >
+              {system?.smtpConfigured ? "SMTP ready" : "Not sending yet"}
+            </span>
+          </div>
+          {!system?.smtpConfigured && (
+            <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              The last booking created both emails, but Gmail did not send them. Paste the Gmail App Password for
+              billoreanuj24@gmail.com (Google Account → Security → 2-Step Verification → App passwords).
+            </p>
+          )}
+          {emailError && <p className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{emailError}</p>}
+          {saved && <p className="rounded-xl bg-teal-50 px-3 py-2 text-sm text-teal-800">{saved}</p>}
+          <div>
+            <label>Gmail App Password</label>
+            <input
+              type="password"
+              value={smtpPassword}
+              onChange={(e) => setSmtpPassword(e.target.value)}
+              placeholder="16-character app password"
+              required
+              autoComplete="new-password"
+            />
+          </div>
+          <button className="btn-primary" type="submit" disabled={emailSaving}>
+            {emailSaving ? "Sending…" : "Save and resend last booking emails"}
+          </button>
+        </form>
+      </section>
       <section className="space-y-4">
         <form onSubmit={saveDoctor} className="card space-y-3 p-5">
           <h2 className="font-display text-xl">{editingId ? "Edit doctor" : "Add doctor"}</h2>

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type CallLog, type DashboardStats } from "../api/client";
+import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr";
+import { api, TOKEN_KEY, type CallLog } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
-import { formatStamp, isoDate } from "../lib/format";
+import { formatStamp } from "../lib/format";
 import { useAuth } from "../context/AuthContext";
+import { useSuccessPopup } from "../components/SuccessPopup";
 
 export function SupportPage() {
   const { user } = useAuth();
@@ -14,6 +16,7 @@ export function SupportPage() {
 }
 
 function PatientSupport() {
+  const { showSuccess } = useSuccessPopup();
   const [items, setItems] = useState<CallLog[]>([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -36,7 +39,8 @@ function PatientSupport() {
     try {
       await api.post("/patients/me/tickets", { message });
       setMessage("");
-      setNotice("Sent. The clinic will contact you.");
+      setNotice("Sent. Clinic staff will see this in Support and Notifications.");
+      showSuccess("Details Submitted");
       await load();
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { message?: string } } };
@@ -57,7 +61,7 @@ function PatientSupport() {
       <section className="card space-y-3 p-5">
         <label>Your message</label>
         <textarea rows={4} value={message} onChange={(e) => setMessage(e.target.value)} placeholder="How can we help?" />
-        <button className="btn-primary" disabled={busy} onClick={() => void send()}>
+        <button className="btn-primary" disabled={busy || message.trim().length < 3} onClick={() => void send()}>
           {busy ? "Sending..." : "Send to clinic"}
         </button>
       </section>
@@ -71,6 +75,12 @@ function PatientSupport() {
                 <p className="font-medium text-slate-800">{item.summary}</p>
                 <StatusBadge status={item.callbackStatus === "Completed" ? "resolved" : "in progress"} />
               </div>
+              {item.actionTaken
+                && (item.actionTaken.startsWith("Support reply:") || item.actionTaken === "Support ticket resolved") && (
+                  <p className="mt-2 rounded-xl bg-teal-50 px-3 py-2 text-sm text-teal-900">
+                    Clinic reply: {item.actionTaken.replace(/^Support reply:\s*/i, "")}
+                  </p>
+                )}
               <p className="mt-1 text-xs text-slate-400">{formatStamp(item.timestamp)}</p>
             </article>
           ))
@@ -81,24 +91,34 @@ function PatientSupport() {
 }
 
 function StaffSupport() {
+  const { showSuccess } = useSuccessPopup();
   const [items, setItems] = useState<CallLog[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [status, setStatus] = useState<"Open" | "In Progress" | "Resolved">("In Progress");
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
+  const [error, setError] = useState("");
 
   async function load() {
-    const today = isoDate(new Date());
-    const from = isoDate(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000));
-    const { data } = await api.get<DashboardStats>("/dashboard", { params: { from, to: today, page: 1, pageSize: 50 } });
-    const tickets = data.actionItems.filter((item) => item.needsPersonalContact || item.callbackStatus);
-    setItems(tickets);
-    setSelectedId((current) => current ?? tickets[0]?.id ?? null);
+    const { data } = await api.get<CallLog[]>("/support/tickets");
+    setItems(data);
+    setSelectedId((current) => current ?? data[0]?.id ?? null);
   }
 
   useEffect(() => {
     void load();
+    const token = localStorage.getItem(TOKEN_KEY);
+    const connection = new HubConnectionBuilder()
+      .withUrl("/hubs/dashboard", { accessTokenFactory: () => token ?? "" })
+      .withAutomaticReconnect()
+      .configureLogging(LogLevel.None)
+      .build();
+    connection.on("CallbackQueued", () => void load());
+    connection.on("NotificationAdded", () => void load());
+    void connection.start();
+    return () => {
+      void connection.stop();
+    };
   }, []);
 
   const visible = useMemo(() => {
@@ -113,20 +133,19 @@ function StaffSupport() {
   }, [items, query]);
 
   const selected = visible.find((item) => item.id === selectedId) ?? visible[0] ?? null;
-  const ticketStatus = useMemo(() => {
-    if (!selected) return "Open";
-    if (selected.callbackStatus === "Completed") return "Resolved";
-    if (selected.callbackStatus === "Required" || selected.callbackStatus === "Queued") return status === "Resolved" ? "Resolved" : status;
-    return "Open";
-  }, [selected, status]);
 
   async function resolve() {
     if (!selected) return;
     setBusy(true);
+    setError("");
     try {
-      await api.post(`/dashboard/calls/${selected.id}/callback/complete`);
+      await api.post(`/support/tickets/${selected.id}/resolve`, { reply });
       setReply("");
+      showSuccess("Details Submitted");
       await load();
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { message?: string } } };
+      setError(axiosErr.response?.data?.message ?? "Could not resolve ticket.");
     } finally {
       setBusy(false);
     }
@@ -139,7 +158,7 @@ function StaffSupport() {
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search tickets..." />
         </div>
         {visible.length === 0 ? (
-          <p className="px-4 py-8 text-sm text-slate-500">No callback tickets right now.</p>
+          <p className="px-4 py-8 text-sm text-slate-500">No support tickets yet.</p>
         ) : (
           visible.map((item) => (
             <button
@@ -149,9 +168,9 @@ function StaffSupport() {
             >
               <div className="flex items-center justify-between gap-2">
                 <p className="font-medium text-slate-800">{item.callerName}</p>
-                <StatusBadge status={item.callbackStatus === "Completed" ? "resolved" : "in progress"} />
+                <StatusBadge status={item.callbackStatus === "Completed" ? "resolved" : "open"} />
               </div>
-              <p className="mt-1 text-xs text-slate-500">Patient · {item.callerPhone || "No number"}</p>
+              <p className="mt-1 line-clamp-2 text-sm text-slate-600">{item.summary}</p>
               <p className="mt-1 text-xs text-slate-400">{formatStamp(item.timestamp)}</p>
             </button>
           ))
@@ -164,37 +183,24 @@ function StaffSupport() {
           <div className="space-y-4">
             <div>
               <h2 className="font-display text-2xl">{selected.callerName}</h2>
-              <p className="text-sm text-slate-500">{selected.callerPhone || "No number"} · opened {formatStamp(selected.timestamp)}</p>
+              <p className="text-sm text-slate-500">
+                {selected.callerPhone || "No number"} · opened {formatStamp(selected.timestamp)}
+              </p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {(["Open", "In Progress", "Resolved"] as const).map((value) => (
-                <button
-                  key={value}
-                  className={`rounded-full px-3 py-1.5 text-sm font-semibold ${
-                    ticketStatus === value
-                      ? value === "In Progress"
-                        ? "bg-amber-500 text-white"
-                        : value === "Open"
-                          ? "bg-sky-500 text-white"
-                          : "bg-teal-700 text-white"
-                      : "bg-slate-100 text-slate-600"
-                  }`}
-                  onClick={() => setStatus(value)}
-                >
-                  {value}
-                </button>
-              ))}
-            </div>
+            {error && <p className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
             <div className="space-y-3 rounded-2xl bg-slate-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Patient</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Patient message</p>
               <p className="rounded-2xl bg-white px-4 py-3 text-sm text-slate-700">{selected.summary}</p>
-              {selected.bookedDoctorName && (
-                <p className="text-sm text-slate-600">Booked with {selected.bookedDoctorName}.</p>
-              )}
             </div>
-            <textarea value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Type your reply... (Enter to send)" rows={3} />
-            <button className="btn-primary" disabled={busy} onClick={() => void resolve()}>
-              Mark resolved
+            <textarea
+              value={reply}
+              onChange={(e) => setReply(e.target.value)}
+              placeholder="Optional reply note..."
+              rows={3}
+              disabled={selected.callbackStatus === "Completed"}
+            />
+            <button className="btn-primary" disabled={busy || selected.callbackStatus === "Completed"} onClick={() => void resolve()}>
+              {selected.callbackStatus === "Completed" ? "Resolved" : busy ? "Saving..." : "Mark resolved"}
             </button>
           </div>
         )}

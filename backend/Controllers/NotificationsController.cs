@@ -1,9 +1,8 @@
-using AiVoicePortal.Api.Data;
 using AiVoicePortal.Api.DTOs;
 using AiVoicePortal.Api.Models;
+using AiVoicePortal.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AiVoicePortal.Api.Controllers;
 
@@ -12,21 +11,42 @@ namespace AiVoicePortal.Api.Controllers;
 [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
 public class NotificationsController : ControllerBase
 {
-    private readonly AppDbContext _db;
+    private readonly IClinicNotificationService _notifications;
+    private readonly ICurrentUserService _current;
 
-    public NotificationsController(AppDbContext db)
+    public NotificationsController(IClinicNotificationService notifications, ICurrentUserService current)
     {
-        _db = db;
+        _notifications = notifications;
+        _current = current;
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<List<ClinicNotificationDto>>> List(CancellationToken cancellationToken)
+    {
+        return await _notifications.ListAsync(_current, cancellationToken);
+    }
+
+    [HttpGet("unread-count")]
+    public async Task<ActionResult<object>> UnreadCount(CancellationToken cancellationToken)
+    {
+        var count = await _notifications.UnreadCountAsync(_current, cancellationToken);
+        return new { count };
+    }
+
+    [HttpPost("{id:int}/read")]
+    public async Task<IActionResult> MarkRead(int id, CancellationToken cancellationToken)
+    {
+        await _notifications.MarkReadAsync(id, _current, cancellationToken);
+        return NoContent();
+    }
+
+    [HttpPost("read-all")]
+    public async Task<IActionResult> MarkAllRead(CancellationToken cancellationToken)
+    {
+        await _notifications.MarkAllReadAsync(_current, cancellationToken);
+        return NoContent();
     }
 
     [HttpGet("emails")]
-    public async Task<ActionResult<List<EmailMessageDto>>> Emails(CancellationToken cancellationToken)
-    {
-        var items = await _db.EmailMessages
-            .OrderByDescending(e => e.SentAt)
-            .Take(50)
-            .Select(e => new EmailMessageDto(e.Id, e.Recipient, e.Subject, e.Body, e.SentAt, e.Delivery))
-            .ToListAsync(cancellationToken);
-        return items;
-    }
+    public ActionResult<object> Emails() => Ok(Array.Empty<object>());
 }

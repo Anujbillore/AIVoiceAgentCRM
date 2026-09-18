@@ -60,6 +60,13 @@ public class BillingController : ControllerBase
             return patientId;
         }
 
-        return await _current.GetPatientIdAsync(cancellationToken);
+        var ownId = await _current.GetPatientIdAsync(cancellationToken);
+        if (!ownId.HasValue)
+        {
+            // Force empty results — never dump the full ledger for an unlinked patient login.
+            return -1;
+        }
+
+        return ownId;
     }
 }

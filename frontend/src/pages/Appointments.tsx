@@ -4,11 +4,13 @@ import { api, type Appointment, type AppointmentPage, type Doctor, type Patient 
 import { StatusBadge } from "../components/StatusBadge";
 import { formatDay, formatLongDay, formatMonthDay, formatTime, isoDate, sameDay, toInputValue } from "../lib/format";
 import { useAuth } from "../context/AuthContext";
+import { useSuccessPopup } from "../components/SuccessPopup";
 
 const STATUSES = ["Pending", "Scheduled", "Completed", "Cancelled", "No Show"];
 
 export function AppointmentsPage() {
   const { user } = useAuth();
+  const { showSuccess } = useSuccessPopup();
   const canManage = user?.role === "Admin" || user?.role === "Doctor";
   const isPatient = user?.role === "Patient";
   const [appointments, setAppointments] = useState<Appointment[]>([]);
@@ -33,7 +35,7 @@ export function AppointmentsPage() {
     const [pat, doc, appt] = await Promise.all([
       api.get<Patient[]>("/patients"),
       api.get<Doctor[]>("/doctors"),
-      api.get<AppointmentPage>("/appointment", { params: { page: 1, pageSize: 100 } }),
+      api.get<AppointmentPage>("/appointment", { params: { page: 1, pageSize: 200 } }),
     ]);
     setPatients(pat.data);
     const active = doc.data.filter((d) => d.isActive);
@@ -84,6 +86,7 @@ export function AppointmentsPage() {
       });
       setOpenBook(false);
       setMessage("Appointment booked.");
+      showSuccess("Details Submitted");
       await load();
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { message?: string } } };
@@ -101,6 +104,7 @@ export function AppointmentsPage() {
     setMessage("");
     await api.patch(`/appointment/${id}/reschedule`, { scheduledAt: new Date(scheduledAt).toISOString() });
     setMessage("Appointment rescheduled.");
+    showSuccess("Details Submitted");
     await load();
   }
 
@@ -131,6 +135,7 @@ export function AppointmentsPage() {
           try {
             await setStatus(id, "Cancelled");
             setMessage("Appointment cancelled.");
+            showSuccess("Details Submitted");
           } catch (err: unknown) {
             const axiosErr = err as { response?: { data?: { message?: string } } };
             setError(axiosErr.response?.data?.message ?? "Could not cancel.");
@@ -216,7 +221,11 @@ export function AppointmentsPage() {
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
           <div>
             <h2 className="font-display text-xl">Patient Appointments</h2>
-            <p className="text-sm text-slate-500">{appointments.length} total · updates in real time</p>
+            <p className="text-sm text-slate-500">
+              {user?.role === "Doctor"
+                ? `${appointments.length} booked with you`
+                : `${appointments.length} total · updates in real time`}
+            </p>
           </div>
           {canManage && (
             <button className="btn-primary" onClick={() => setOpenBook(true)}>

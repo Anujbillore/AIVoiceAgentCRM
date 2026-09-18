@@ -18,4 +18,5 @@ public class CallLog
     public bool ConsentGiven { get; set; } = true;
     public int? PatientId { get; set; }
     public string ExternalId { get; set; } = string.Empty;
+    public double DurationSeconds { get; set; }
 }

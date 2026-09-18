@@ -343,7 +343,7 @@ public class SarvamManagedService : ISarvamManagedService
         var existing = await FindExistingCallAsync(externalId, callerPhone, cancellationToken);
         if (existing is not null)
         {
-            MergeCall(existing, callerName, callerPhone, summary, transcript, request.Status, request.FailureReason);
+            MergeCall(existing, callerName, callerPhone, summary, transcript, request.Status, request.FailureReason, request.DurationSeconds);
             var existingRelated = await FindRelatedAppointmentAsync(existing, cancellationToken);
             if (existingRelated is not null)
             {
@@ -364,8 +364,9 @@ public class SarvamManagedService : ISarvamManagedService
             : await FindOrCreatePatientAsync(callerName, callerPhone, cancellationToken);
 
         var timestamp = request.StartedAt?.ToUniversalTime() ?? DateTime.UtcNow;
-        var duration = request.DurationSeconds is > 0
-            ? $" ({Math.Round(request.DurationSeconds.Value)}s)"
+        var durationSeconds = NormalizeDurationSeconds(request.DurationSeconds);
+        var duration = durationSeconds is > 0
+            ? $" ({Math.Round(durationSeconds.Value)}s)"
             : "";
         var forwarded = CallLogDetails.LooksForwarded(classifyText)
             || intent.Equals("Human", StringComparison.OrdinalIgnoreCase);
@@ -389,7 +390,8 @@ public class SarvamManagedService : ISarvamManagedService
             Outcome = forwarded ? "Forwarded" : request.Status.Equals("failed", StringComparison.OrdinalIgnoreCase) ? "Failed" : "Contained",
             EscalationReason = forwarded ? (string.IsNullOrWhiteSpace(request.FailureReason) ? "Call forwarded to clinic staff" : request.FailureReason.Trim()) : request.FailureReason ?? "",
             TransferType = forwarded ? (unanswered ? "Callback" : "Warm") : "None",
-            PatientId = patient?.Id
+            PatientId = patient?.Id,
+            DurationSeconds = durationSeconds ?? 0
         };
 
         _db.CallLogs.Add(callLog);
@@ -517,7 +519,7 @@ public class SarvamManagedService : ISarvamManagedService
         return matches.FirstOrDefault(c => CallLogDetails.Last10(c.CallerPhone) == last10);
     }
 
-    private static void MergeCall(CallLog existing, string callerName, string callerPhone, string summary, string transcript, string status, string? failureReason)
+    private static void MergeCall(CallLog existing, string callerName, string callerPhone, string summary, string transcript, string status, string? failureReason, double? durationSeconds)
     {
         if (existing.CallerName is "Unknown" or "Unknown caller" && callerName is not "Unknown")
         {
@@ -544,10 +546,27 @@ public class SarvamManagedService : ISarvamManagedService
             existing.EscalationReason = failureReason;
         }
 
+        var seconds = NormalizeDurationSeconds(durationSeconds);
+        if (seconds is > 0)
+        {
+            existing.DurationSeconds = seconds.Value;
+        }
+
         if (existing.ActionTaken.StartsWith("Sarvam Voicebot", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(status))
         {
-            existing.ActionTaken = $"Sarvam Voicebot {status}";
+            var suffix = existing.DurationSeconds > 0 ? $" ({Math.Round(existing.DurationSeconds)}s)" : "";
+            existing.ActionTaken = $"Sarvam Voicebot {status}{suffix}";
         }
+    }
+
+    private static double? NormalizeDurationSeconds(double? value)
+    {
+        if (value is null or <= 0)
+        {
+            return null;
+        }
+
+        return value > 10_000 ? value / 1000.0 : value;
     }
 
     private static void ApplyBookingToCall(CallLog callLog, Appointment related)

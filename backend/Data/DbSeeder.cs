@@ -1,4 +1,5 @@
 using AiVoicePortal.Api.Models;
+using AiVoicePortal.Api.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -311,6 +312,136 @@ public static class DbSeeder
             claim.ClaimNumber = $"CLM-{DateTime.UtcNow.Year}-{claim.Id:D5}";
         }
 
+        foreach (var doctor in await db.Doctors.ToListAsync())
+        {
+            if (string.IsNullOrWhiteSpace(doctor.Email))
+            {
+                continue;
+            }
+
+            var user = await EnsureUserAsync(users, doctor.Email, "Doctor@123", doctor.Name, AppRoles.Doctor);
+            if (string.IsNullOrWhiteSpace(doctor.UserId))
+            {
+                doctor.UserId = user.Id;
+            }
+        }
+
+        var mehtaUser = await EnsureUserAsync(users, "mehta@clinic.com", "Doctor@123", "Dr. Mehta", AppRoles.Doctor);
+        var mehtaDoctor = await db.Doctors.FirstOrDefaultAsync(d => d.Email == "mehta@clinic.com");
+        if (mehtaDoctor is null)
+        {
+            mehtaDoctor = new Doctor
+            {
+                UserId = mehtaUser.Id,
+                Name = "Dr. Mehta",
+                Email = "mehta@clinic.com",
+                Specialization = DoctorSpecialties.GeneralPhysician,
+                Phone = "+91 98765 11111",
+                IsActive = true,
+                Schedules = WeekdaySchedule(new TimeSpan(9, 0, 0), new TimeSpan(18, 0, 0))
+            };
+            db.Doctors.Add(mehtaDoctor);
+        }
+        else
+        {
+            mehtaDoctor.UserId = mehtaUser.Id;
+            mehtaDoctor.IsActive = true;
+            if (string.IsNullOrWhiteSpace(mehtaDoctor.Specialization))
+            {
+                mehtaDoctor.Specialization = DoctorSpecialties.GeneralPhysician;
+            }
+        }
+
+        await db.SaveChangesAsync();
+        await EnsureDashboardDemoAsync(db);
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task EnsureDashboardDemoAsync(AppDbContext db)
+    {
+        const string marker = "Dashboard demo seed";
+        var patients = await db.Patients.OrderBy(p => p.Id).Take(4).ToListAsync();
+        var mehta = await db.Doctors.FirstOrDefaultAsync(d => d.Email == "mehta@clinic.com" && d.IsActive);
+        var others = await db.Doctors.Where(d => d.IsActive && d.Email != "mehta@clinic.com").OrderBy(d => d.Id).Take(2).ToListAsync();
+        if (patients.Count < 3 || mehta is null)
+        {
+            return;
+        }
+
+        var doctors = new List<Doctor> { mehta };
+        doctors.AddRange(others);
+        var today = IndiaTime.Now.Date;
+
+        if (!await db.Appointments.AnyAsync(a => a.Notes.Contains(marker)))
+        {
+            var demos = new List<(Patient Patient, Doctor Doctor, DateTime At, string Status, int Minutes)>
+            {
+                (patients[0], mehta, today.AddDays(-5).AddHours(10), "Completed", 4),
+                (patients[1], mehta, today.AddDays(-3).AddHours(11), "Completed", 6),
+                (patients[2], doctors.Count > 1 ? doctors[1] : mehta, today.AddDays(-2).AddHours(15), "Cancelled", 2),
+                (patients[0], mehta, today.AddDays(-1).AddHours(9).AddMinutes(30), "Scheduled", 5),
+                (patients[1], doctors.Count > 1 ? doctors[1] : mehta, today.AddHours(16), "Pending", 3),
+                (patients[2], mehta, today.AddDays(1).AddHours(12), "Scheduled", 0),
+                (patients.Count > 3 ? patients[3] : patients[0], doctors.Count > 2 ? doctors[2] : mehta, today.AddDays(2).AddHours(14), "Scheduled", 0),
+            };
+
+            foreach (var item in demos)
+            {
+                await AddDemoVisitAsync(db, item.Patient, item.Doctor, item.At, item.Status, item.Minutes, marker);
+            }
+
+            return;
+        }
+
+        if (!await db.Appointments.AnyAsync(a => a.DoctorId == mehta.Id && a.Notes.Contains(marker)))
+        {
+            await AddDemoVisitAsync(db, patients[0], mehta, today.AddDays(-4).AddHours(10), "Completed", 4, marker);
+            await AddDemoVisitAsync(db, patients[1], mehta, today.AddDays(-1).AddHours(11), "Scheduled", 5, marker);
+            await AddDemoVisitAsync(db, patients[2], mehta, today.AddDays(1).AddHours(12), "Pending", 0, marker);
+        }
+    }
+
+    private static async Task AddDemoVisitAsync(
+        AppDbContext db,
+        Patient patient,
+        Doctor doctor,
+        DateTime at,
+        string status,
+        int minutes,
+        string marker)
+    {
+        var appointment = new Appointment
+        {
+            PatientId = patient.Id,
+            DoctorId = doctor.Id,
+            ScheduledAt = at,
+            Status = status,
+            Notes = $"{marker} · clinic visit",
+            CreatedAt = IndiaTime.ToUtcFromIst(at.AddHours(-2))
+        };
+        db.Appointments.Add(appointment);
+        await db.SaveChangesAsync();
+
+        if (minutes <= 0)
+        {
+            return;
+        }
+
+        db.CallLogs.Add(new CallLog
+        {
+            PatientId = patient.Id,
+            CallerName = patient.Name,
+            CallerPhone = patient.Contact,
+            Summary = $"{patient.Name} booked with {doctor.Name} for {at:ddd d MMM, h:mm tt} IST.",
+            ActionTaken = $"Booked with {doctor.Name} at {at:h:mm tt} IST ({minutes * 60}s)",
+            Intent = "Appointment",
+            Transcript = $"I need an appointment with {doctor.Name}.",
+            Outcome = status == "Cancelled" ? "Cancelled" : "Booked",
+            Timestamp = IndiaTime.ToUtcFromIst(at.AddHours(-1)),
+            DurationSeconds = minutes * 60,
+            ExternalId = $"sarvam-book:{appointment.Id}",
+            ConsentGiven = true
+        });
         await db.SaveChangesAsync();
     }
 
@@ -337,6 +468,17 @@ public static class DbSeeder
             if (!result.Succeeded)
             {
                 throw new InvalidOperationException(string.Join("; ", result.Errors.Select(e => e.Description)));
+            }
+        }
+        else if (email.EndsWith("@clinic.com", StringComparison.OrdinalIgnoreCase))
+        {
+            // Keep demo logins reliable across restarts.
+            var token = await users.GeneratePasswordResetTokenAsync(user);
+            await users.ResetPasswordAsync(user, token, password);
+            if (user.FullName != fullName)
+            {
+                user.FullName = fullName;
+                await users.UpdateAsync(user);
             }
         }
 

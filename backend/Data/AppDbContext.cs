@@ -16,6 +16,7 @@ public class AppDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<Appointment> Appointments => Set<Appointment>();
     public DbSet<CallLog> CallLogs => Set<CallLog>();
     public DbSet<CallCallback> CallCallbacks => Set<CallCallback>();
+    public DbSet<ClinicNotification> ClinicNotifications => Set<ClinicNotification>();
     public DbSet<AiSettings> AiSettings => Set<AiSettings>();
     public DbSet<EmailMessage> EmailMessages => Set<EmailMessage>();
     public DbSet<PatientDocument> PatientDocuments => Set<PatientDocument>();

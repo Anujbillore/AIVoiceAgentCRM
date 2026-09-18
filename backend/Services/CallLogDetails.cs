@@ -26,12 +26,21 @@ public static class CallLogDetails
             }
         }
 
-        var doctor = appointment?.Doctor?.Name ?? ExtractBookedDoctor(CallText(call));
-        var when = appointment?.ScheduledAt;
+        var extracted = ExtractBookedDoctor(CallText(call));
+        var linked = appointment;
+        if (!string.IsNullOrWhiteSpace(extracted)
+            && linked?.Doctor is not null
+            && !SameDoctor(extracted, linked.Doctor.Name))
+        {
+            linked = null;
+        }
+
+        var doctor = linked?.Doctor?.Name ?? extracted;
+        var when = linked?.ScheduledAt;
         var summary = BuildSummary(call, name, doctor, when);
         var completed = status.Equals("Completed", StringComparison.OrdinalIgnoreCase);
-        var unansweredForward = !completed && appointment is null && IsUnansweredForward(call);
-        var needsContact = !completed && (unansweredForward || IsCallbackRequested(call, appointment, callback));
+        var unansweredForward = !completed && linked is null && IsUnansweredForward(call);
+        var needsContact = !completed && (unansweredForward || IsCallbackRequested(call, linked, callback));
         var callbackStatus = completed
             ? "Completed"
             : !needsContact
@@ -55,11 +64,23 @@ public static class CallLogDetails
             call.Confidence,
             call.Sentiment,
             call.ConsentGiven,
-            appointment?.Id,
+            linked?.Id,
             doctor,
             when,
             needsContact,
-            callbackStatus);
+            callbackStatus,
+            ResolveDurationSeconds(call));
+    }
+
+    public static double ResolveDurationSeconds(CallLog call)
+    {
+        if (call.DurationSeconds > 0)
+        {
+            return call.DurationSeconds;
+        }
+
+        var match = Regex.Match(call.ActionTaken ?? "", @"\((\d+(?:\.\d+)?)s\)", RegexOptions.IgnoreCase);
+        return match.Success && double.TryParse(match.Groups[1].Value, out var seconds) ? seconds : 0;
     }
 
     public static string BuildSummary(CallLog call, string name, string doctor, DateTime? when)
@@ -125,6 +146,22 @@ public static class CallLogDetails
         }
 
         return "";
+    }
+
+    public static bool SameDoctor(string? booked, string? doctorName)
+    {
+        if (string.IsNullOrWhiteSpace(booked) || string.IsNullOrWhiteSpace(doctorName))
+        {
+            return false;
+        }
+
+        static string Norm(string value) =>
+            Regex.Replace(value.Trim(), @"^dr\.?\s*", "", RegexOptions.IgnoreCase).Trim();
+
+        var left = Norm(booked);
+        var right = Norm(doctorName);
+        return left.Equals(right, StringComparison.OrdinalIgnoreCase)
+            || booked.Trim().Equals(doctorName.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     public static string ExtractBookedDoctor(string text)
@@ -458,6 +495,19 @@ public static class CallLogDetails
         if (callPhone.Length >= 10 && callPhone == patientPhone)
         {
             score += 80;
+        }
+
+        var extractedDoctor = ExtractBookedDoctor(CallText(call));
+        if (!string.IsNullOrWhiteSpace(extractedDoctor) && appointment.Doctor is not null)
+        {
+            if (SameDoctor(extractedDoctor, appointment.Doctor.Name))
+            {
+                score += 100;
+            }
+            else
+            {
+                score -= 120;
+            }
         }
 
         if (!string.Equals(call.CallerName, "Unknown", StringComparison.OrdinalIgnoreCase)

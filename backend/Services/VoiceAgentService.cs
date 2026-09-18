@@ -25,7 +25,6 @@ public class VoiceAgentService : IVoiceAgentService
     private readonly IVoiceSessionStore _sessions;
     private readonly IExotelMediaService _exotel;
     private readonly IFinanceService _finance;
-    private readonly IEmailService _email;
     private readonly IConfiguration _config;
 
     public VoiceAgentService(
@@ -36,7 +35,6 @@ public class VoiceAgentService : IVoiceAgentService
         IVoiceSessionStore sessions,
         IExotelMediaService exotel,
         IFinanceService finance,
-        IEmailService email,
         IConfiguration config)
     {
         _db = db;
@@ -46,7 +44,6 @@ public class VoiceAgentService : IVoiceAgentService
         _sessions = sessions;
         _exotel = exotel;
         _finance = finance;
-        _email = email;
         _config = config;
     }
 
@@ -364,21 +361,10 @@ public class VoiceAgentService : IVoiceAgentService
             notes += $"; symptoms: {session.Symptoms}";
         }
 
-        var booked = await _appointments.BookAsync(
+        return await _appointments.BookAsync(
             new BookAppointmentRequest(patient.Id, doctor.Id, time, notes),
             pushDashboard: false,
             cancellationToken);
-
-        if (!string.IsNullOrWhiteSpace(patient.Email))
-        {
-            await _email.SendAsync(
-                patient.Email,
-                "Your Anuj Clinic appointment",
-                $"Hello {patient.Name},\n\nYour appointment with {booked.DoctorName} is confirmed for {booked.ScheduledAt:dddd, d MMM yyyy, h:mm tt}.\nPlease arrive 15 minutes early with ID and any reports.\n\nRegards,\n{ (await _db.AiSettings.FirstAsync(cancellationToken)).AgentName }",
-                cancellationToken);
-        }
-
-        return booked;
     }
 
     private async Task IdentifyCallerAsync(VoiceSession session, CancellationToken cancellationToken)

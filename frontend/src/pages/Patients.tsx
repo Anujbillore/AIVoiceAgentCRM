@@ -5,6 +5,7 @@ import { PatientChart } from "../components/PatientChart";
 import { StatusBadge } from "../components/StatusBadge";
 import { formatStamp } from "../lib/format";
 import { useAuth } from "../context/AuthContext";
+import { useSuccessPopup } from "../components/SuccessPopup";
 
 const empty = {
   name: "",
@@ -32,6 +33,7 @@ function initials(name: string) {
 
 export function PatientsPage() {
   const { user } = useAuth();
+  const { showSuccess } = useSuccessPopup();
   const canEdit = user?.role === "Admin" || user?.role === "Doctor";
   const canDelete = user?.role === "Admin";
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -101,6 +103,7 @@ export function PatientsPage() {
       }
       setForm(empty);
       setEditingId(null);
+      showSuccess("Details Submitted");
       await load();
       if (selectedId) {
         await loadDetail(selectedId);

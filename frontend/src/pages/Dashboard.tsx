@@ -1,23 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, Children } from "react";
 import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr";
 import {
   ArcElement,
   CategoryScale,
   Chart as ChartJS,
-  Filler,
   Legend,
   LinearScale,
-  LineElement,
-  PointElement,
   BarElement,
   Tooltip,
 } from "chart.js";
-import { Bar, Doughnut, Line } from "react-chartjs-2";
-import { CalendarCheck, CircleCheck, Clock3, Phone, PhoneForwarded, PhoneIncoming } from "lucide-react";
+import { Bar, Doughnut } from "react-chartjs-2";
+import { CalendarCheck, CircleCheck, Clock3, Phone, PhoneForwarded, PhoneIncoming, Timer } from "lucide-react";
 import { Link } from "react-router-dom";
-import { api, TOKEN_KEY, type CallLog, type DashboardStats } from "../api/client";
+import { api, TOKEN_KEY, type Appointment, type CallLog, type DashboardStats } from "../api/client";
+import { StatusBadge } from "../components/StatusBadge";
+import { formatDay, formatTime } from "../lib/format";
+import { useAuth } from "../context/AuthContext";
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Tooltip, Legend, Filler);
+ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Tooltip, Legend);
 
 function formatStamp(value: string) {
   return new Date(value).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
@@ -36,43 +36,60 @@ function startOfMonth() {
 const ACTION_PAGE_SIZE = 8;
 
 export function DashboardPage() {
+  const { user } = useAuth();
+  const isDoctor = user?.role === "Doctor";
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [fromDate, setFromDate] = useState(isoDate(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)));
   const [toDate, setToDate] = useState(isoDate(new Date()));
   const [actionPage, setActionPage] = useState(1);
+  const [upcomingPage, setUpcomingPage] = useState(1);
   const [callbackBusy, setCallbackBusy] = useState<number | null>(null);
-  const rangeRef = useRef({ from: fromDate, to: toDate, page: 1 });
-  rangeRef.current = { from: fromDate, to: toDate, page: actionPage };
+  const rangeRef = useRef({ from: fromDate, to: toDate, page: 1, upcomingPage: 1 });
+  rangeRef.current = { from: fromDate, to: toDate, page: actionPage, upcomingPage };
 
-  async function load(nextFrom = rangeRef.current.from, nextTo = rangeRef.current.to, page = rangeRef.current.page) {
+  async function load(
+    nextFrom = rangeRef.current.from,
+    nextTo = rangeRef.current.to,
+    page = rangeRef.current.page,
+    nextUpcomingPage = rangeRef.current.upcomingPage,
+  ) {
     const { data } = await api.get<DashboardStats>("/dashboard", {
-      params: { from: nextFrom, to: nextTo, page, pageSize: ACTION_PAGE_SIZE },
+      params: {
+        from: nextFrom,
+        to: nextTo,
+        page,
+        pageSize: ACTION_PAGE_SIZE,
+        upcomingPage: nextUpcomingPage,
+        upcomingPageSize: 5,
+      },
     });
     setStats(data);
     setActionPage(data.actionItemPage);
+    setUpcomingPage(data.upcomingItemPage ?? nextUpcomingPage);
   }
 
   function applyPreset(preset: "today" | "week" | "month") {
     const today = isoDate(new Date());
     setActionPage(1);
+    setUpcomingPage(1);
     if (preset === "today") {
       setFromDate(today);
       setToDate(today);
-      void load(today, today, 1);
+      void load(today, today, 1, 1);
       return;
     }
     if (preset === "month") {
       const start = startOfMonth();
       setFromDate(start);
       setToDate(today);
-      void load(start, today, 1);
+      void load(start, today, 1, 1);
       return;
     }
     const weekStart = isoDate(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000));
     setFromDate(weekStart);
     setToDate(today);
-    void load(weekStart, today, 1);
+    void load(weekStart, today, 1, 1);
   }
 
   async function finishCallback(id: number) {
@@ -97,23 +114,26 @@ export function DashboardPage() {
     connection.on("CallSummaryAdded", (item: CallLog) => {
       setToast(`${item.callerName}: ${item.summary}`);
       setActionPage(1);
-      void load(rangeRef.current.from, rangeRef.current.to, 1);
+      void load(rangeRef.current.from, rangeRef.current.to, 1, rangeRef.current.upcomingPage);
       window.setTimeout(() => setToast(null), 4000);
     });
     connection.on("TransferRequested", (item: { callerName?: string; reason?: string }) => {
       setToast(`Warm transfer — ${item.callerName ?? "Caller"}: ${item.reason ?? "needs a person"}`);
       setActionPage(1);
-      void load(rangeRef.current.from, rangeRef.current.to, 1);
+      void load(rangeRef.current.from, rangeRef.current.to, 1, rangeRef.current.upcomingPage);
       window.setTimeout(() => setToast(null), 6000);
     });
     connection.on("CallbackQueued", (item: { callerName?: string; summary?: string }) => {
       setToast(`Callback queued — ${item.callerName ?? "Caller"}: ${item.summary ?? "call back"}`);
       setActionPage(1);
-      void load(rangeRef.current.from, rangeRef.current.to, 1);
+      void load(rangeRef.current.from, rangeRef.current.to, 1, rangeRef.current.upcomingPage);
       window.setTimeout(() => setToast(null), 5000);
     });
     connection.on("AppointmentChanged", () => {
-      void load(rangeRef.current.from, rangeRef.current.to, rangeRef.current.page);
+      void load(rangeRef.current.from, rangeRef.current.to, rangeRef.current.page, rangeRef.current.upcomingPage);
+    });
+    connection.on("NotificationAdded", () => {
+      void load(rangeRef.current.from, rangeRef.current.to, rangeRef.current.page, rangeRef.current.upcomingPage);
     });
 
     void connection.start();
@@ -121,23 +141,6 @@ export function DashboardPage() {
       void connection.stop();
     };
   }, []);
-
-  const callChart = useMemo(
-    () => ({
-      labels: stats?.callVolume.map((x) => x.label) ?? [],
-      datasets: [
-        {
-          label: "Daily call volume",
-          data: stats?.callVolume.map((x) => x.count) ?? [],
-          borderColor: "#0f766e",
-          backgroundColor: "rgba(13,148,136,0.15)",
-          fill: true,
-          tension: 0.35,
-        },
-      ],
-    }),
-    [stats],
-  );
 
   const statusBarChart = useMemo(
     () => ({
@@ -195,6 +198,7 @@ export function DashboardPage() {
     { label: "Booked", value: stats.bookedAppointments, icon: CalendarCheck },
     { label: "Pending", value: stats.pendingAppointments, icon: Clock3 },
     { label: "Completed", value: stats.completedAppointments, icon: CircleCheck },
+    { label: "Agent minutes", value: `${stats.callMinutes ?? 0}`, icon: Timer },
   ];
 
   return (
@@ -204,48 +208,77 @@ export function DashboardPage() {
           Live update — {toast}
         </div>
       )}
-      <section className="card flex flex-wrap items-end gap-3 p-4">
-        <div>
+      <section className="card flex flex-wrap items-end gap-2 p-3 sm:gap-3 sm:p-4">
+        <div className="w-full sm:w-auto">
           <label>From</label>
-          <input className="w-auto" type="date" value={fromDate} max={toDate} onChange={(e) => setFromDate(e.target.value)} />
+          <input className="w-full sm:w-auto" type="date" value={fromDate} max={toDate} onChange={(e) => setFromDate(e.target.value)} />
         </div>
-        <div>
+        <div className="w-full sm:w-auto">
           <label>To</label>
-          <input className="w-auto" type="date" value={toDate} min={fromDate} onChange={(e) => setToDate(e.target.value)} />
+          <input className="w-full sm:w-auto" type="date" value={toDate} min={fromDate} onChange={(e) => setToDate(e.target.value)} />
         </div>
         <button
-          className="btn-primary"
+          className="btn-primary w-full sm:w-auto"
           onClick={() => {
             setActionPage(1);
-            void load(fromDate, toDate, 1);
+            setUpcomingPage(1);
+            void load(fromDate, toDate, 1, 1);
           }}
         >
           Apply
         </button>
-        <button className="btn-ghost" onClick={() => applyPreset("today")}>
-          Today
-        </button>
-        <button className="btn-ghost" onClick={() => applyPreset("week")}>
-          Last 7 days
-        </button>
-        <button className="btn-ghost" onClick={() => applyPreset("month")}>
-          This month
-        </button>
-        <p className="ml-auto text-sm text-slate-500">
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+          <button className="btn-ghost" onClick={() => applyPreset("today")}>
+            Today
+          </button>
+          <button className="btn-ghost" onClick={() => applyPreset("week")}>
+            Last 7 days
+          </button>
+          <button className="btn-ghost" onClick={() => applyPreset("month")}>
+            This month
+          </button>
+        </div>
+        <p className="w-full text-sm text-slate-500 sm:ml-auto sm:w-auto">
           Showing {new Date(fromDate).toLocaleDateString()} – {new Date(toDate).toLocaleDateString()}
         </p>
       </section>
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
         {cards.map((card) => (
-          <div key={card.label} className="card p-5">
+          <div key={card.label} className="card p-4 sm:p-5">
             <div className="flex items-center justify-between">
               <p className="text-sm text-slate-500">{card.label}</p>
               <card.icon className="h-4 w-4 text-teal-700" />
             </div>
-            <p className="mt-3 font-display text-4xl">{card.value}</p>
+            <p className="mt-3 font-display text-3xl sm:text-4xl">{card.value}</p>
           </div>
         ))}
       </section>
+
+      <UpcomingList
+        title="Upcoming appointments"
+        subtitle={isDoctor ? "Patients booked with you, sorted by date" : "All doctors — next visits first"}
+        empty="No upcoming appointments."
+        action={<Link className="text-sm font-semibold text-teal-700 hover:underline" to="/appointments">Open schedule</Link>}
+        page={stats.upcomingItemPage ?? upcomingPage}
+        pageSize={stats.upcomingItemPageSize ?? 5}
+        total={stats.upcomingItemTotal ?? stats.upcomingAppointments}
+        onPageChange={(next) => {
+          setUpcomingPage(next);
+          void load(fromDate, toDate, actionPage, next);
+        }}
+      >
+        {(stats.upcomingAppointmentItems ?? []).map((item: Appointment) => (
+          <article key={item.id} className="flex items-start justify-between gap-3 rounded-2xl bg-slate-50 px-4 py-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-teal-700">{formatDay(item.scheduledAt)} · {formatTime(item.scheduledAt)}</p>
+              <p className="font-medium text-slate-800">{item.patientName}</p>
+              <p className="text-sm text-slate-500">Booked with {item.doctorName} · {item.patientContact || "No number"}</p>
+              <p className="text-xs text-slate-500">{item.notes || "Clinic visit"}</p>
+            </div>
+            <StatusBadge status={item.status} />
+          </article>
+        ))}
+      </UpcomingList>
 
       <section className="grid gap-4 xl:grid-cols-2">
         <div className="card p-5">
@@ -270,16 +303,15 @@ export function DashboardPage() {
         </div>
       </section>
 
-      <section className="card p-5">
-        <h2 className="mb-4 font-display text-xl">Daily call volume</h2>
-        <Line data={callChart} options={{ plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }} />
-      </section>
-
       <section className="card overflow-hidden">
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
           <div>
             <h2 className="font-display text-xl">Recent calls</h2>
-            <p className="text-sm text-slate-500">Who called, contact number, booked with, and summary.</p>
+            <p className="text-sm text-slate-500">
+              {isDoctor
+                ? "Only calls that booked an appointment with you."
+                : "Who called, contact number, booked with, and summary."}
+            </p>
           </div>
           <Link className="text-sm font-semibold text-teal-700 hover:underline" to="/calls">
             Open call log
@@ -301,7 +333,7 @@ export function DashboardPage() {
               {stats.actionItems.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-5 py-8 text-center text-slate-500">
-                    No calls in this date range.
+                    {isDoctor ? "No calls booked with you in this date range." : "No calls in this date range."}
                   </td>
                 </tr>
               ) : (
@@ -397,5 +429,62 @@ export function DashboardPage() {
         )}
       </section>
     </div>
+  );
+}
+
+function UpcomingList({
+  title,
+  subtitle,
+  empty,
+  action,
+  children,
+  page,
+  pageSize,
+  total,
+  onPageChange,
+}: {
+  title: string;
+  subtitle: string;
+  empty: string;
+  action?: ReactNode;
+  children: ReactNode;
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+}) {
+  const items = Children.toArray(children);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  return (
+    <section className="card p-5">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="font-display text-xl">{title}</h2>
+          <p className="text-sm text-slate-500">{subtitle}</p>
+        </div>
+        {action}
+      </div>
+      <div className="space-y-2">
+        {items.length === 0 ? <p className="py-6 text-sm text-slate-500">{empty}</p> : items}
+      </div>
+      {total > 0 && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
+          <p className="text-sm text-slate-500">
+            Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} of {total}
+          </p>
+          <div className="flex items-center gap-2">
+            <button className="btn-ghost" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+              Previous
+            </button>
+            <span className="text-sm text-slate-600">
+              Page {page} of {pageCount}
+            </span>
+            <button className="btn-ghost" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)}>
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

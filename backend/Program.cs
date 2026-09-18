@@ -115,9 +115,11 @@ builder.Services.AddCors(options =>
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
 builder.Services.AddScoped<ITokenService, TokenService>();
+builder.Services.AddHttpClient(nameof(EmailService));
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<IEmailSender, EmailService>();
 builder.Services.AddScoped<IAppointmentService, AppointmentService>();
+builder.Services.AddScoped<IClinicNotificationService, ClinicNotificationService>();
 builder.Services.AddScoped<IFinanceService, FinanceService>();
 builder.Services.AddSingleton<IVoiceSessionStore, VoiceSessionStore>();
 builder.Services.AddScoped<IVoiceAgentService, VoiceAgentService>();

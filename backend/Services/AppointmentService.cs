@@ -14,6 +14,8 @@ public interface IAppointmentService
     Task<AppointmentPageDto> ListPagedAsync(int? doctorId, int? patientId, int page, int pageSize, CancellationToken cancellationToken = default);
     Task<AppointmentDto> UpdateStatusAsync(int id, string status, CancellationToken cancellationToken = default);
     Task<AppointmentDto> RescheduleAsync(int id, DateTime scheduledAt, CancellationToken cancellationToken = default);
+    Task<AppointmentDto> DecideFromEmailAsync(int id, string action, string? token, CancellationToken cancellationToken = default);
+    Task ResendBookingEmailsAsync(int id, CancellationToken cancellationToken = default);
 }
 
 public class AppointmentService : IAppointmentService
@@ -21,12 +23,24 @@ public class AppointmentService : IAppointmentService
     private readonly AppDbContext _db;
     private readonly IEmailService _email;
     private readonly IHubContext<DashboardHub> _hub;
+    private readonly IClinicNotificationService _notifications;
+    private readonly IConfiguration _config;
+    private readonly ILogger<AppointmentService> _logger;
 
-    public AppointmentService(AppDbContext db, IEmailService email, IHubContext<DashboardHub> hub)
+    public AppointmentService(
+        AppDbContext db,
+        IEmailService email,
+        IHubContext<DashboardHub> hub,
+        IClinicNotificationService notifications,
+        IConfiguration config,
+        ILogger<AppointmentService> logger)
     {
         _db = db;
         _email = email;
         _hub = hub;
+        _notifications = notifications;
+        _config = config;
+        _logger = logger;
     }
 
     public async Task<AppointmentDto> BookAsync(BookAppointmentRequest request, bool pushDashboard = true, CancellationToken cancellationToken = default)
@@ -67,22 +81,17 @@ public class AppointmentService : IAppointmentService
         _db.Appointments.Add(appointment);
         await _db.SaveChangesAsync(cancellationToken);
 
-        var body = $"""
-            Dear Dr. {doctor.Name},
-
-            A new appointment has been booked.
-
-            Patient: {patient.Name}
-            Age: {patient.Age}
-            Contact: {patient.Contact}
-            Appointment Time: {scheduledLocal:yyyy-MM-dd HH:mm}
-
-            Regards,
-            Anuj's AI Assistant
-            """;
-
-        await _email.SendAsync(doctor.Email, "New Appointment Booking", body, cancellationToken);
+        await TrySendBookingEmailsAsync(appointment, patient, doctor, scheduledLocal, cancellationToken);
         await _hub.Clients.All.SendAsync("AppointmentChanged", ToDto(appointment, patient, doctor), cancellationToken);
+        await _notifications.PublishAsync(
+            "New appointment booked",
+            $"{patient.Name} booked with {doctor.Name} on {scheduledLocal:ddd d MMM, h:mm tt}.",
+            "Appointment",
+            "Staff",
+            doctor.Id,
+            "Appointment",
+            appointment.Id,
+            cancellationToken);
 
         if (pushDashboard)
         {
@@ -175,6 +184,20 @@ public class AppointmentService : IAppointmentService
         await _db.SaveChangesAsync(cancellationToken);
         var dto = ToDto(appointment, appointment.Patient, appointment.Doctor);
         await _hub.Clients.All.SendAsync("AppointmentChanged", dto, cancellationToken);
+        var title = AppointmentStatuses.IsCancelled(status)
+            ? "Appointment cancelled"
+            : AppointmentStatuses.IsCompleted(status)
+                ? "Appointment completed"
+                : "Appointment updated";
+        await _notifications.PublishAsync(
+            title,
+            $"{appointment.Patient?.Name} · {appointment.Doctor?.Name} · {appointment.ScheduledAt:ddd d MMM, h:mm tt} · {status}",
+            "Appointment",
+            "Staff",
+            appointment.DoctorId,
+            "Appointment",
+            appointment.Id,
+            cancellationToken);
         return dto;
     }
 
@@ -207,14 +230,161 @@ public class AppointmentService : IAppointmentService
         appointment.ScheduledAt = scheduledLocal;
         appointment.Status = "Scheduled";
         await _db.SaveChangesAsync(cancellationToken);
-        await _hub.Clients.All.SendAsync("AppointmentChanged", ToDto(appointment, appointment.Patient, appointment.Doctor), cancellationToken);
-        await _email.SendAsync(
-            appointment.Doctor.Email,
-            "Appointment Rescheduled",
-            $"Dear Dr. {appointment.Doctor.Name},\n\n{appointment.Patient.Name} was rescheduled to {scheduledLocal:yyyy-MM-dd HH:mm}.\n\nRegards,\nAnuj's AI Assistant",
+        var dto = ToDto(appointment, appointment.Patient, appointment.Doctor);
+        await _hub.Clients.All.SendAsync("AppointmentChanged", dto, cancellationToken);
+        await TrySendRescheduleEmailAsync(appointment, scheduledLocal, cancellationToken);
+        await _notifications.PublishAsync(
+            "Appointment rescheduled",
+            $"{appointment.Patient.Name} moved to {scheduledLocal:ddd d MMM, h:mm tt} with {appointment.Doctor.Name}.",
+            "Appointment",
+            "Staff",
+            appointment.DoctorId,
+            "Appointment",
+            appointment.Id,
             cancellationToken);
-        return ToDto(appointment, appointment.Patient, appointment.Doctor);
+        return dto;
     }
+
+    public async Task<AppointmentDto> DecideFromEmailAsync(int id, string action, string? token, CancellationToken cancellationToken = default)
+    {
+        var secret = EmailTokenSecret();
+        if (!AppointmentMail.TokenValid(id, action, token ?? "", secret))
+        {
+            throw new UnauthorizedAccessException("This approval link is invalid or expired.");
+        }
+
+        var normalized = action.Trim().ToLowerInvariant();
+        if (normalized is not ("approve" or "reject"))
+        {
+            throw new InvalidOperationException("Unknown email action.");
+        }
+
+        var appointment = await _db.Appointments
+            .Include(a => a.Patient)
+            .Include(a => a.Doctor)
+            .FirstOrDefaultAsync(a => a.Id == id, cancellationToken)
+            ?? throw new KeyNotFoundException("Appointment not found.");
+
+        if (normalized == "reject" && AppointmentStatuses.IsCancelled(appointment.Status))
+        {
+            return ToDto(
+                appointment,
+                appointment.Patient ?? throw new InvalidOperationException("Patient is missing."),
+                appointment.Doctor ?? throw new InvalidOperationException("Doctor is missing."));
+        }
+
+        if (normalized == "approve" && AppointmentStatuses.IsCancelled(appointment.Status))
+        {
+            throw new InvalidOperationException("This appointment was already cancelled.");
+        }
+
+        var nextStatus = normalized == "reject" ? "Cancelled" : "Confirmed";
+        return await UpdateStatusAsync(id, nextStatus, cancellationToken);
+    }
+
+    public async Task ResendBookingEmailsAsync(int id, CancellationToken cancellationToken = default)
+    {
+        var appointment = await _db.Appointments
+            .Include(a => a.Patient)
+            .Include(a => a.Doctor)
+            .FirstOrDefaultAsync(a => a.Id == id, cancellationToken)
+            ?? throw new KeyNotFoundException("Appointment not found.");
+
+        var patient = appointment.Patient ?? throw new InvalidOperationException("Patient is missing.");
+        var doctor = appointment.Doctor ?? throw new InvalidOperationException("Doctor is missing.");
+        await TrySendBookingEmailsAsync(appointment, patient, doctor, appointment.ScheduledAt, cancellationToken, requireDelivery: true);
+    }
+
+    private async Task TrySendBookingEmailsAsync(
+        Appointment appointment,
+        Patient patient,
+        Doctor doctor,
+        DateTime scheduledLocal,
+        CancellationToken cancellationToken,
+        bool requireDelivery = false)
+    {
+        try
+        {
+            var patientName = PatientDisplayName(patient);
+            var (approveUrl, rejectUrl) = EmailDecisionUrls(appointment.Id);
+            var doctorBody = AppointmentMail.DoctorBookingBody(patientName, scheduledLocal, approveUrl, rejectUrl);
+            await _email.SendDoctorAsync(
+                doctor.Email,
+                "New Appointment Request",
+                doctorBody,
+                cancellationToken,
+                AppointmentMail.ToHtml(doctorBody, approveUrl, rejectUrl),
+                requireDelivery);
+
+            var patientBody = AppointmentMail.PatientBookingBody(
+                patientName,
+                AppointmentMail.DisplayDoctor(doctor),
+                scheduledLocal,
+                ClinicAddress());
+            await _email.SendPatientAsync(
+                patient.Email,
+                "Appointment Confirmation",
+                patientBody,
+                cancellationToken,
+                AppointmentMail.ToHtml(patientBody),
+                requireDelivery);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Booking emails failed for appointment {AppointmentId}", appointment.Id);
+            if (requireDelivery)
+            {
+                throw;
+            }
+        }
+    }
+
+    private async Task TrySendRescheduleEmailAsync(Appointment appointment, DateTime scheduledLocal, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var body = AppointmentMail.DoctorRescheduleBody(PatientDisplayName(appointment.Patient), scheduledLocal);
+            await _email.SendDoctorAsync(
+                appointment.Doctor.Email,
+                "Appointment Rescheduled",
+                body,
+                cancellationToken,
+                AppointmentMail.ToHtml(body));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Reschedule email failed for appointment {AppointmentId}", appointment.Id);
+        }
+    }
+
+    private string PatientDisplayName(Patient? patient)
+    {
+        var overrideOn = !bool.TryParse(_config["Email:OverrideRecipients"], out var flag) || flag;
+        var testName = _config["Email:TestPatientName"];
+        if (overrideOn && !string.IsNullOrWhiteSpace(testName))
+        {
+            return testName.Trim();
+        }
+
+        return patient is null ? "Patient" : AppointmentMail.DisplayName(patient);
+    }
+
+    private (string ApproveUrl, string RejectUrl) EmailDecisionUrls(int appointmentId)
+    {
+        var api = (_config["Email:PublicApiUrl"] ?? _config["Voice:PublicBaseUrl"] ?? "http://localhost:5147").TrimEnd('/');
+        var secret = EmailTokenSecret();
+        var approve = AppointmentMail.Token(appointmentId, "approve", secret);
+        var reject = AppointmentMail.Token(appointmentId, "reject", secret);
+        return (
+            $"{api}/api/appointment/{appointmentId}/email/approve?token={approve}",
+            $"{api}/api/appointment/{appointmentId}/email/reject?token={reject}");
+    }
+
+    private string EmailTokenSecret() =>
+        _config["Email:TokenSecret"] ?? _config["Jwt:Key"] ?? "AnujClinic-appointment-email-secret";
+
+    private string ClinicAddress() =>
+        _config["Email:ClinicAddress"] ?? "Anuj Clinic, Andheri, Mumbai";
 
     private static void EnsureAvailability(Doctor doctor, DateTime scheduledAt)
     {

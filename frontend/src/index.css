@@ -6,8 +6,13 @@
   color-scheme: light;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 input,
@@ -20,6 +25,9 @@ input[type="checkbox"] {
   @apply h-4 w-4 rounded border-slate-300 p-0;
 }
 
+label {
+  @apply mb-1.5 block text-sm font-medium text-slate-700;
+}
 
 .card {
   @apply rounded-2xl border border-slate-200/80 bg-white shadow-sm;
@@ -39,4 +47,34 @@ input[type="checkbox"] {
 
 .btn-danger {
   @apply btn bg-rose-600 text-white hover:bg-rose-700;
+}
+
+.table-wrap {
+  @apply -mx-4 overflow-x-auto sm:mx-0;
+}
+
+.success-popup {
+  animation: success-pop 0.55s cubic-bezier(0.22, 1.2, 0.36, 1);
+  transform-style: preserve-3d;
+}
+
+@keyframes success-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(24px) scale(0.82) rotateX(18deg);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.04) rotateX(-4deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1) rotateX(0deg);
+  }
+}
+
+@media (max-width: 640px) {
+  .font-display {
+    letter-spacing: -0.02em;
+  }
 }

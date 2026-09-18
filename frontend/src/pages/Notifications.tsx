@@ -1,95 +1,113 @@
 import { useEffect, useState } from "react";
-import { CalendarCheck, PhoneCall } from "lucide-react";
-import { api, type Appointment, type AppointmentPage, type DashboardStats } from "../api/client";
-import { formatStamp, isoDate } from "../lib/format";
-
-interface Notice {
-  id: string;
-  title: string;
-  detail: string;
-  tag: string;
-  at: string;
-  unread: boolean;
-}
+import { CalendarCheck, LifeBuoy, PhoneCall } from "lucide-react";
+import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr";
+import { api, TOKEN_KEY, type ClinicNotification } from "../api/client";
+import { formatStamp } from "../lib/format";
 
 export function NotificationsPage() {
-  const [notices, setNotices] = useState<Notice[]>([]);
-  const [filter, setFilter] = useState<"all" | "unread" | "appointments">("all");
+  const [notices, setNotices] = useState<ClinicNotification[]>([]);
+  const [filter, setFilter] = useState<"all" | "unread" | "appointments" | "support">("all");
 
   async function load() {
-    const today = isoDate(new Date());
-    const from = isoDate(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000));
-    const [dash, appts] = await Promise.all([
-      api.get<DashboardStats>("/dashboard", { params: { from, to: today, page: 1, pageSize: 30 } }),
-      api.get<AppointmentPage>("/appointment", { params: { page: 1, pageSize: 50 } }),
-    ]);
-    const callNotes: Notice[] = dash.data.actionItems.map((item) => ({
-      id: `call-${item.id}`,
-      title: item.bookedDoctorName ? "New Appointment Booked" : "Inbound call",
-      detail: `${item.callerName}${item.callerPhone ? ` · ${item.callerPhone}` : ""}${item.bookedDoctorName ? ` booked with ${item.bookedDoctorName}` : ""}. ${item.summary}`,
-      tag: item.bookedDoctorName ? "Appointment" : "Call",
-      at: item.timestamp,
-      unread: Boolean(item.needsPersonalContact && item.callbackStatus !== "Completed"),
-    }));
-    const apptNotes: Notice[] = appts.data.items.map((item: Appointment) => ({
-      id: `appt-${item.id}`,
-      title: item.status === "Cancelled" ? "Appointment Cancelled" : "Appointment update",
-      detail: `${item.patientName} · ${item.patientContact || "No number"} · booked with ${item.doctorName} on ${formatStamp(item.scheduledAt)}`,
-      tag: item.status,
-      at: item.createdAt || item.scheduledAt,
-      unread: item.status === "Pending",
-    }));
-    setNotices([...callNotes, ...apptNotes].sort((a, b) => +new Date(b.at) - +new Date(a.at)));
+    const { data } = await api.get<ClinicNotification[]>("/notifications");
+    setNotices(data);
   }
 
   useEffect(() => {
     void load();
+    const token = localStorage.getItem(TOKEN_KEY);
+    const connection = new HubConnectionBuilder()
+      .withUrl("/hubs/dashboard", { accessTokenFactory: () => token ?? "" })
+      .withAutomaticReconnect()
+      .configureLogging(LogLevel.None)
+      .build();
+    connection.on("NotificationAdded", () => void load());
+    connection.on("AppointmentChanged", () => void load());
+    connection.on("CallbackQueued", () => void load());
+    void connection.start();
+    return () => {
+      void connection.stop();
+    };
   }, []);
 
-  const unreadCount = notices.filter((item) => item.unread).length;
+  async function markAllRead() {
+    await api.post("/notifications/read-all");
+    await load();
+  }
+
+  async function markRead(id: number) {
+    await api.post(`/notifications/${id}/read`);
+    setNotices((current) => current.map((item) => (item.id === id ? { ...item, isRead: true } : item)));
+  }
+
+  const unreadCount = notices.filter((item) => !item.isRead).length;
   const visible = notices.filter((item) => {
-    if (filter === "unread") return item.unread;
-    if (filter === "appointments") return item.tag.toLowerCase().includes("appointment") || item.title.toLowerCase().includes("appointment");
+    if (filter === "unread") return !item.isRead;
+    if (filter === "appointments") return item.tag.toLowerCase().includes("appointment");
+    if (filter === "support") return item.tag.toLowerCase().includes("support");
     return true;
   });
+
+  function iconFor(tag: string) {
+    const value = tag.toLowerCase();
+    if (value.includes("support")) return LifeBuoy;
+    if (value.includes("call")) return PhoneCall;
+    return CalendarCheck;
+  }
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-slate-500">{notices.length} total · {unreadCount} unread</p>
-        <div className="flex gap-2">
-          {(["all", "unread", "appointments"] as const).map((value) => (
+        <p className="text-sm text-slate-500">
+          {notices.length} total · {unreadCount} unread
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {(["all", "unread", "appointments", "support"] as const).map((value) => (
             <button
               key={value}
               className={`rounded-full px-3 py-1.5 text-sm font-semibold capitalize ${filter === value ? "bg-teal-700 text-white" : "bg-white text-slate-600"}`}
               onClick={() => setFilter(value)}
             >
-              {value === "all" ? `All (${notices.length})` : value === "unread" ? `Unread (${unreadCount})` : `Appointments (${notices.filter((n) => n.title.toLowerCase().includes("appointment") || n.tag.toLowerCase().includes("appointment")).length})`}
+              {value}
             </button>
           ))}
-          <button className="btn-ghost" onClick={() => void load()}>Refresh</button>
+          <button className="btn-ghost" onClick={() => void markAllRead()} disabled={unreadCount === 0}>
+            Mark all read
+          </button>
+          <button className="btn-ghost" onClick={() => void load()}>
+            Refresh
+          </button>
         </div>
       </div>
       <section className="card divide-y divide-slate-100">
         {visible.length === 0 ? (
           <p className="px-5 py-8 text-sm text-slate-500">No notifications yet.</p>
         ) : (
-          visible.map((item) => (
-            <article key={item.id} className="flex gap-4 px-5 py-4">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-teal-50 text-teal-800">
-                {item.tag.toLowerCase().includes("call") ? <PhoneCall className="h-4 w-4" /> : <CalendarCheck className="h-4 w-4" />}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="font-semibold text-slate-800">{item.title}</h2>
-                  <span className="rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-800">{item.tag}</span>
-                  {item.unread && <span className="h-2 w-2 rounded-full bg-sky-500" />}
+          visible.map((item) => {
+            const Icon = iconFor(item.tag);
+            return (
+              <article
+                key={item.id}
+                className={`flex cursor-pointer gap-4 px-5 py-4 ${item.isRead ? "" : "bg-teal-50/40"}`}
+                onClick={() => {
+                  if (!item.isRead) void markRead(item.id);
+                }}
+              >
+                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-teal-50 text-teal-800">
+                  <Icon className="h-4 w-4" />
                 </div>
-                <p className="mt-1 text-sm text-slate-600">{item.detail}</p>
-              </div>
-              <p className="whitespace-nowrap text-xs text-slate-400">{formatStamp(item.at)}</p>
-            </article>
-          ))
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-semibold text-slate-800">{item.title}</h2>
+                    <span className="rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-800">{item.tag}</span>
+                    {!item.isRead && <span className="h-2 w-2 rounded-full bg-sky-500" />}
+                  </div>
+                  <p className="mt-1 text-sm text-slate-600">{item.detail}</p>
+                </div>
+                <p className="whitespace-nowrap text-xs text-slate-400">{formatStamp(item.createdAt)}</p>
+              </article>
+            );
+          })
         )}
       </section>
     </div>

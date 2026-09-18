@@ -162,6 +162,7 @@ export interface CallLog {
   appointmentTime?: string | null;
   needsPersonalContact?: boolean;
   callbackStatus?: string;
+  durationSeconds?: number;
 }
 
 export interface EmailMessage {
@@ -181,6 +182,15 @@ export interface AppointmentStatusDay {
   cancelled: number;
 }
 
+export interface DashboardEvent {
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  at: string;
+  status: string;
+}
+
 export interface DashboardStats {
   fromDate: string;
   toDate: string;
@@ -192,7 +202,7 @@ export interface DashboardStats {
   pendingAppointments: number;
   completedAppointments: number;
   cancelledAppointments: number;
-  callVolume: { label: string; count: number }[];
+  callVolume: { label: string; count: number; minutes?: number }[];
   appointmentStats: { label: string; count: number }[];
   appointmentStatusByDay: AppointmentStatusDay[];
   actionItems: CallLog[];
@@ -203,6 +213,23 @@ export interface DashboardStats {
   escalatedCalls?: number;
   callbackQueued?: number;
   recentEmails: EmailMessage[];
+  upcomingAppointmentItems?: Appointment[];
+  upcomingEvents?: DashboardEvent[];
+  callMinutes?: number;
+  upcomingItemPage?: number;
+  upcomingItemPageSize?: number;
+  upcomingItemTotal?: number;
+}
+
+export interface ClinicNotification {
+  id: number;
+  title: string;
+  detail: string;
+  tag: string;
+  createdAt: string;
+  isRead: boolean;
+  relatedType?: string | null;
+  relatedId?: number | null;
 }
 
 export interface SystemStatus {
@@ -214,6 +241,9 @@ export interface SystemStatus {
   appointments: number;
   callLogs: number;
   emails: number;
+  smtpConfigured?: boolean;
+  fromEmail?: string;
+  testInbox?: string;
 }
 
 export interface AiSettings {

@@ -35,6 +35,8 @@ public class DashboardController : ControllerBase
         [FromQuery] DateTime? to,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 8,
+        [FromQuery] int upcomingPage = 1,
+        [FromQuery] int upcomingPageSize = 5,
         CancellationToken cancellationToken = default)
     {
         var end = (to ?? DateTime.Today).Date;
@@ -54,12 +56,40 @@ public class DashboardController : ControllerBase
         var startUtc = IndiaTime.StartOfDayUtc(start);
         var rangeEndUtc = IndiaTime.StartOfDayUtc(end.AddDays(1));
         var doctorId = _current.IsDoctor ? await _current.GetDoctorIdAsync(cancellationToken) : null;
+        if (_current.IsDoctor && !doctorId.HasValue)
+        {
+            return new DashboardStatsDto(
+                start,
+                end,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                [],
+                [],
+                [],
+                [],
+                0,
+                page,
+                pageSize,
+                [],
+                0,
+                0,
+                0,
+                [],
+                [],
+                0);
+        }
 
         var appointmentRows = await _db.Appointments
             .Where(a =>
                 (!doctorId.HasValue || a.DoctorId == doctorId)
-                && ((a.ScheduledAt >= startIst && a.ScheduledAt < rangeEndIst)
-                    || (a.CreatedAt >= startUtc && a.CreatedAt < rangeEndUtc)))
+                && a.ScheduledAt >= startIst
+                && a.ScheduledAt < rangeEndIst)
             .ToListAsync(cancellationToken);
 
         var callRows = await _db.CallLogs
@@ -77,7 +107,26 @@ public class DashboardController : ControllerBase
             (!doctorId.HasValue || a.DoctorId == doctorId)
             && a.ScheduledAt >= IndiaTime.Now
             && (a.Status == "Scheduled" || a.Status == "Booked" || a.Status == "Pending" || a.Status == "Confirmed"), cancellationToken);
-        var doctors = await _db.Doctors.CountAsync(d => d.IsActive, cancellationToken);
+        var doctors = doctorId.HasValue
+            ? 1
+            : await _db.Doctors.CountAsync(d => d.IsActive, cancellationToken);
+        var now = IndiaTime.Now;
+        upcomingPage = upcomingPage < 1 ? 1 : upcomingPage;
+        upcomingPageSize = upcomingPageSize is < 1 or > 50 ? 5 : upcomingPageSize;
+        var upcomingQuery = _db.Appointments
+            .Include(a => a.Patient)
+            .Include(a => a.Doctor)
+            .Where(a =>
+                (!doctorId.HasValue || a.DoctorId == doctorId)
+                && a.ScheduledAt >= now
+                && (a.Status == "Scheduled" || a.Status == "Booked" || a.Status == "Pending" || a.Status == "Confirmed"))
+            .OrderBy(a => a.ScheduledAt);
+        var upcomingItemTotal = await upcomingQuery.CountAsync(cancellationToken);
+        var upcomingRows = await upcomingQuery
+            .Skip((upcomingPage - 1) * upcomingPageSize)
+            .Take(upcomingPageSize)
+            .ToListAsync(cancellationToken);
+        var upcomingItems = upcomingRows.Select(a => AppointmentService.ToDto(a, a.Patient, a.Doctor)).ToList();
 
         var callVolume = new List<DailyCountDto>();
         var appointmentStats = new List<DailyCountDto>();
@@ -87,18 +136,27 @@ public class DashboardController : ControllerBase
         {
             var day = start.AddDays(i);
             var next = day.AddDays(1);
-            var dayAppointments = appointmentRows.Where(a => ChartDay(a, startIst, rangeEndIst) >= day && ChartDay(a, startIst, rangeEndIst) < next).ToList();
+            var dayAppointments = appointmentRows
+                .Where(a => a.ScheduledAt.Date >= day && a.ScheduledAt.Date < next)
+                .ToList();
             var callCount = callRows.Count(c =>
             {
                 var ist = IndiaTime.ToIstLocal(DateTime.SpecifyKind(c.Timestamp, DateTimeKind.Utc));
                 return ist >= day && ist < next;
             });
+            var dayMinutes = Math.Round(callRows
+                .Where(c =>
+                {
+                    var ist = IndiaTime.ToIstLocal(DateTime.SpecifyKind(c.Timestamp, DateTimeKind.Utc));
+                    return ist >= day && ist < next;
+                })
+                .Sum(CallLogDetails.ResolveDurationSeconds) / 60.0, 1);
             var pendingDay = dayAppointments.Count(a => AppointmentStatuses.IsPending(a.Status));
             var completedDay = dayAppointments.Count(a => AppointmentStatuses.IsCompleted(a.Status));
             var cancelledDay = dayAppointments.Count(a => AppointmentStatuses.IsCancelled(a.Status));
             var bookedDay = pendingDay + completedDay;
             var label = days <= 13 ? day.ToString("ddd d MMM") : day.ToString("d MMM");
-            callVolume.Add(new DailyCountDto(label, callCount));
+            callVolume.Add(new DailyCountDto(label, callCount, dayMinutes));
             appointmentStats.Add(new DailyCountDto(label, bookedDay));
             statusByDay.Add(new AppointmentStatusDayDto(label, bookedDay, pendingDay, completedDay, cancelledDay));
         }
@@ -116,7 +174,8 @@ public class DashboardController : ControllerBase
                     || patientIds.Contains(a.PatientId)
                     || bookedIds.Contains(a.Id)
                     || a.Notes.Contains("Voicebot")
-                    || a.Notes.Contains("Sarvam")))
+                    || a.Notes.Contains("Sarvam")
+                    || a.Notes.Contains("Dashboard demo")))
             .OrderByDescending(a => a.CreatedAt)
             .ToListAsync(cancellationToken);
         var patients = await _db.Patients.ToListAsync(cancellationToken);
@@ -161,11 +220,62 @@ public class DashboardController : ControllerBase
         {
             await _db.SaveChangesAsync(cancellationToken);
         }
+        if (doctorId.HasValue)
+        {
+            var doctorName = await _db.Doctors
+                .Where(d => d.Id == doctorId)
+                .Select(d => d.Name)
+                .FirstOrDefaultAsync(cancellationToken) ?? "";
+            var doctorAppointmentIds = await _db.Appointments
+                .Where(a => a.DoctorId == doctorId)
+                .Select(a => a.Id)
+                .ToListAsync(cancellationToken);
+            allItems = allItems.Where(x =>
+            {
+                if (CallLogDetails.SameDoctor(x.BookedDoctorName, doctorName))
+                {
+                    return true;
+                }
+
+                if (!string.IsNullOrWhiteSpace(x.BookedDoctorName))
+                {
+                    return false;
+                }
+
+                return x.AppointmentId.HasValue && doctorAppointmentIds.Contains(x.AppointmentId.Value);
+            }).ToList();
+            var keepIds = allItems.Select(x => x.Id).ToHashSet();
+            callRows = callRows.Where(c => keepIds.Contains(c.Id)).ToList();
+            callsInRange = callRows.Count;
+            callVolume.Clear();
+            for (var i = 0; i <= days; i++)
+            {
+                var day = start.AddDays(i);
+                var next = day.AddDays(1);
+                var callCount = callRows.Count(c =>
+                {
+                    var ist = IndiaTime.ToIstLocal(DateTime.SpecifyKind(c.Timestamp, DateTimeKind.Utc));
+                    return ist >= day && ist < next;
+                });
+                var dayMinutes = Math.Round(callRows
+                    .Where(c =>
+                    {
+                        var ist = IndiaTime.ToIstLocal(DateTime.SpecifyKind(c.Timestamp, DateTimeKind.Utc));
+                        return ist >= day && ist < next;
+                    })
+                    .Sum(CallLogDetails.ResolveDurationSeconds) / 60.0, 1);
+                var label = days <= 13 ? day.ToString("ddd d MMM") : day.ToString("d MMM");
+                callVolume.Add(new DailyCountDto(label, callCount, dayMinutes));
+            }
+        }
+
+        actionTotal = allItems.Count;
         var items = allItems.Skip((page - 1) * pageSize).Take(pageSize).ToList();
 
         var forwarded = callRows.Count(CallLogDetails.IsForwarded);
         var callbacks = allItems.Count(x => x.NeedsPersonalContact);
         var containment = callsInRange == 0 ? 0 : Math.Round((callsInRange - forwarded) * 100.0 / callsInRange, 1);
+        var callMinutes = Math.Round(callRows.Sum(CallLogDetails.ResolveDurationSeconds) / 60.0, 1);
 
         return new DashboardStatsDto(
             start,
@@ -188,7 +298,13 @@ public class DashboardController : ControllerBase
             [],
             containment,
             forwarded,
-            callbacks);
+            callbacks,
+            upcomingItems,
+            [],
+            callMinutes,
+            upcomingPage,
+            upcomingPageSize,
+            upcomingItemTotal);
     }
 
     [HttpPost("calls/{id:int}/callback")]
@@ -199,6 +315,11 @@ public class DashboardController : ControllerBase
         if (call is null)
         {
             return NotFound();
+        }
+
+        if (!await CanManageCallAsync(call, cancellationToken))
+        {
+            return Forbid();
         }
 
         var existing = await _db.CallCallbacks
@@ -241,6 +362,11 @@ public class DashboardController : ControllerBase
             return NotFound();
         }
 
+        if (!await CanManageCallAsync(call, cancellationToken))
+        {
+            return Forbid();
+        }
+
         var rows = await _db.CallCallbacks.OrderByDescending(c => c.CreatedAt).ToListAsync(cancellationToken);
         var callback = CallLogDetails.FindCallback(call, rows);
         if (callback is not null)
@@ -253,13 +379,43 @@ public class DashboardController : ControllerBase
         return CallLogDetails.ToDto(call, null, callback);
     }
 
-    private static DateTime ChartDay(Appointment appointment, DateTime startIst, DateTime rangeEndIst)
+    private async Task<bool> CanManageCallAsync(CallLog call, CancellationToken cancellationToken)
     {
-        if (appointment.ScheduledAt >= startIst && appointment.ScheduledAt < rangeEndIst)
+        if (_current.IsAdmin)
         {
-            return appointment.ScheduledAt.Date;
+            return true;
         }
 
-        return IndiaTime.ToIstLocal(DateTime.SpecifyKind(appointment.CreatedAt, DateTimeKind.Utc)).Date;
+        if (!_current.IsDoctor)
+        {
+            return false;
+        }
+
+        var doctorId = await _current.GetDoctorIdAsync(cancellationToken);
+        if (!doctorId.HasValue)
+        {
+            return false;
+        }
+
+        var doctorName = await _db.Doctors
+            .Where(d => d.Id == doctorId)
+            .Select(d => d.Name)
+            .FirstOrDefaultAsync(cancellationToken) ?? "";
+
+        var bookedId = CallLogDetails.BookedAppointmentId(call);
+        if (bookedId is int appointmentId)
+        {
+            return await _db.Appointments.AnyAsync(a => a.Id == appointmentId && a.DoctorId == doctorId, cancellationToken);
+        }
+
+        var text = CallLogDetails.CallText(call);
+        var extracted = CallLogDetails.ExtractBookedDoctor(text);
+        if (!string.IsNullOrWhiteSpace(extracted))
+        {
+            return CallLogDetails.SameDoctor(extracted, doctorName);
+        }
+
+        // Unbooked callbacks / unknown calls: staff queue is clinic-wide for doctors.
+        return true;
     }
 }

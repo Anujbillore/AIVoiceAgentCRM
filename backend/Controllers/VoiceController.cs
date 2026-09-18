@@ -28,21 +28,21 @@ public class VoiceController : ControllerBase
     }
 
     [HttpGet("status")]
-    [Authorize]
+    [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
     public async Task<ActionResult<VoiceStatusDto>> Status(CancellationToken cancellationToken)
     {
         return await _voice.GetStatusAsync(PublicRoot(), cancellationToken);
     }
 
     [HttpPost("session")]
-    [Authorize]
+    [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
     public async Task<ActionResult<VoiceSessionDto>> Start(VoiceSessionStartRequest request, CancellationToken cancellationToken)
     {
         return await _voice.StartAsync(request, null, cancellationToken);
     }
 
     [HttpPost("session/{id}/turn")]
-    [Authorize]
+    [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
     public async Task<ActionResult<VoiceSessionDto>> Turn(string id, VoiceSessionTurnRequest request, CancellationToken cancellationToken)
     {
         try
@@ -56,7 +56,7 @@ public class VoiceController : ControllerBase
     }
 
     [HttpPost("session/{id}/audio")]
-    [Authorize]
+    [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
     public async Task<ActionResult<VoiceSessionDto>> TurnAudio(string id, IFormFile file, CancellationToken cancellationToken)
     {
         if (file is null || file.Length == 0)
@@ -86,7 +86,7 @@ public class VoiceController : ControllerBase
     }
 
     [HttpPost("session/{id}/end")]
-    [Authorize]
+    [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
     public async Task<ActionResult<VoiceSessionDto>> End(string id, CancellationToken cancellationToken)
     {
         try
@@ -100,7 +100,7 @@ public class VoiceController : ControllerBase
     }
 
     [HttpPost("simulate")]
-    [Authorize]
+    [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
     public async Task<ActionResult<VoiceTurnResponse>> Simulate(SimulateCallRequest request, CancellationToken cancellationToken)
     {
         return Ok(await _voice.HandleIncomingAsync(request, cancellationToken));
@@ -309,7 +309,7 @@ public class VoiceController : ControllerBase
     }
 
     [HttpPost("transcribe")]
-    [Authorize]
+    [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
     public async Task<IActionResult> Transcribe(IFormFile file, CancellationToken cancellationToken)
     {
         if (file is null || file.Length == 0)

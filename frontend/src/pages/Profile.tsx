@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, type PatientDetail } from "../api/client";
 import { PatientChart } from "../components/PatientChart";
+import { useSuccessPopup } from "../components/SuccessPopup";
 
 const empty = {
   name: "",
@@ -17,6 +18,7 @@ const empty = {
 };
 
 export function ProfilePage() {
+  const { showSuccess } = useSuccessPopup();
   const [form, setForm] = useState(empty);
   const [detail, setDetail] = useState<PatientDetail | null>(null);
   const [message, setMessage] = useState("");
@@ -52,6 +54,7 @@ export function ProfilePage() {
     try {
       await api.put("/patients/me", form);
       setMessage("Your details were saved.");
+      showSuccess("Details Submitted");
       await load();
     } catch {
       setError("Could not update your profile.");
@@ -127,8 +130,10 @@ export function ProfilePage() {
           </div>
         </div>
         <div>
-          <label>Notes</label>
-          <textarea rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+          <label>Clinic notes</label>
+          <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-600">
+            {form.notes || "No clinic notes yet. Staff can update these."}
+          </p>
         </div>
         <button className="btn-primary">Save details</button>
       </form>

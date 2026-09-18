@@ -160,7 +160,8 @@ public record CallLogDto(
     string BookedDoctorName = "",
     DateTime? AppointmentTime = null,
     bool NeedsPersonalContact = false,
-    string CallbackStatus = "");
+    string CallbackStatus = "",
+    double DurationSeconds = 0);
 
 public record SimulateCallRequest(
     string CallerName,
@@ -248,6 +249,16 @@ public record AiSettingsDto(
     string ConsentMessage = "",
     string TransferNumber = "");
 
+public record ClinicNotificationDto(
+    int Id,
+    string Title,
+    string Detail,
+    string Tag,
+    DateTime CreatedAt,
+    bool IsRead,
+    string? RelatedType = null,
+    int? RelatedId = null);
+
 public record DashboardStatsDto(
     DateTime FromDate,
     DateTime ToDate,
@@ -269,9 +280,23 @@ public record DashboardStatsDto(
     List<EmailMessageDto> RecentEmails,
     double ContainmentRate = 0,
     int EscalatedCalls = 0,
-    int CallbackQueued = 0);
+    int CallbackQueued = 0,
+    List<AppointmentDto>? UpcomingAppointmentItems = null,
+    List<DashboardEventDto>? UpcomingEvents = null,
+    double CallMinutes = 0,
+    int UpcomingItemPage = 1,
+    int UpcomingItemPageSize = 5,
+    int UpcomingItemTotal = 0);
 
-public record DailyCountDto(string Label, int Count);
+public record DashboardEventDto(
+    string Id,
+    string Kind,
+    string Title,
+    string Detail,
+    DateTime At,
+    string Status);
+
+public record DailyCountDto(string Label, int Count, double Minutes = 0);
 
 public record AppointmentStatusDayDto(string Label, int Booked, int Pending, int Completed, int Cancelled);
 
@@ -283,7 +308,14 @@ public record SystemStatusDto(
     int Doctors,
     int Appointments,
     int CallLogs,
-    int Emails);
+    int Emails,
+    bool SmtpConfigured = false,
+    string FromEmail = "",
+    string TestInbox = "");
+
+public record EmailSettingsDto(bool SmtpConfigured, string FromEmail, string TestInbox);
+
+public record SaveEmailSettingsRequest(string Password);
 
 public record EmailMessageDto(int Id, string Recipient, string Subject, string Body, DateTime SentAt, string Delivery);
 

@@ -16,6 +16,7 @@ import { SettingsPage } from "./pages/Settings";
 import { CallLogPage } from "./pages/CallLog";
 import { SupportPage } from "./pages/Support";
 import { NotificationsPage } from "./pages/Notifications";
+import { BillingPage } from "./pages/Billing";
 
 function GuestOnly({ children }: { children: ReactNode }) {
   const { user } = useAuth();
@@ -86,8 +87,22 @@ export default function App() {
                   </ProtectedRoute>
                 }
               />
-              <Route path="/appointments" element={<AppointmentsPage />} />
-              <Route path="/support" element={<SupportPage />} />
+              <Route
+                path="/appointments"
+                element={
+                  <ProtectedRoute roles={["Admin", "Patient"]}>
+                    <AppointmentsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/support"
+                element={
+                  <ProtectedRoute roles={["Admin", "Patient"]}>
+                    <SupportPage />
+                  </ProtectedRoute>
+                }
+              />
               <Route
                 path="/notifications"
                 element={
@@ -96,9 +111,16 @@ export default function App() {
                   </ProtectedRoute>
                 }
               />
-              <Route path="/billing" element={<Navigate to="/" replace />} />
+              <Route
+                path="/billing"
+                element={
+                  <ProtectedRoute roles={["Admin"]}>
+                    <BillingPage />
+                  </ProtectedRoute>
+                }
+              />
               <Route path="/insurance" element={<Navigate to="/" replace />} />
-              <Route path="/payments" element={<Navigate to="/" replace />} />
+              <Route path="/payments" element={<Navigate to="/billing" replace />} />
               <Route path="/voice" element={<Navigate to="/" replace />} />
               <Route
                 path="/settings"

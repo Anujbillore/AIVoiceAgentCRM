@@ -4,6 +4,8 @@ import { api, TOKEN_KEY, type CallLog, type DashboardStats } from "../api/client
 import { StatusBadge } from "../components/StatusBadge";
 import { formatStamp, isoDate } from "../lib/format";
 import { useAuth } from "../context/AuthContext";
+import { Pagination } from "../components/Pagination";
+import { pagerProps, usePaged } from "../lib/pager";
 
 export function CallLogPage() {
   const { user } = useAuth();
@@ -47,6 +49,7 @@ export function CallLogPage() {
         (item.bookedDoctorName ?? "").toLowerCase().includes(term),
     );
   }, [stats, query]);
+  const pagedItems = usePaged(items, 8, query);
 
   const selected = items.find((item) => item.id === selectedId) ?? items[0] ?? null;
 
@@ -74,7 +77,7 @@ export function CallLogPage() {
               {user?.role === "Doctor" ? "No calls for appointments booked with you." : "No calls in the last 30 days."}
             </p>
           ) : (
-            items.map((item) => (
+            pagedItems.items.map((item) => (
               <button
                 key={item.id}
                 onClick={() => setSelectedId(item.id)}
@@ -90,6 +93,7 @@ export function CallLogPage() {
             ))
           )}
         </div>
+        <Pagination {...pagerProps(pagedItems)} />
       </section>
 
       <section className="card p-5">

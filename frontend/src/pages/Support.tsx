@@ -5,6 +5,8 @@ import { StatusBadge } from "../components/StatusBadge";
 import { formatStamp } from "../lib/format";
 import { useAuth } from "../context/AuthContext";
 import { useSuccessPopup } from "../components/SuccessPopup";
+import { Pagination } from "../components/Pagination";
+import { pagerProps, usePaged } from "../lib/pager";
 
 export function SupportPage() {
   const { user } = useAuth();
@@ -22,6 +24,7 @@ function PatientSupport() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const pagedItems = usePaged(items, 8);
 
   async function load() {
     const { data } = await api.get<CallLog[]>("/patients/me/tickets");
@@ -35,6 +38,10 @@ function PatientSupport() {
   async function send() {
     setError("");
     setNotice("");
+    if (message.trim().length < 3) {
+      setError("Write a short message so the clinic can help.");
+      return;
+    }
     setBusy(true);
     try {
       await api.post("/patients/me/tickets", { message });
@@ -69,7 +76,7 @@ function PatientSupport() {
         {items.length === 0 ? (
           <p className="px-5 py-8 text-sm text-slate-500">No previous requests.</p>
         ) : (
-          items.map((item) => (
+          pagedItems.items.map((item) => (
             <article key={item.id} className="px-5 py-4">
               <div className="flex items-center justify-between gap-2">
                 <p className="font-medium text-slate-800">{item.summary}</p>
@@ -85,6 +92,7 @@ function PatientSupport() {
             </article>
           ))
         )}
+        <Pagination {...pagerProps(pagedItems)} />
       </section>
     </div>
   );
@@ -131,6 +139,7 @@ function StaffSupport() {
         item.summary.toLowerCase().includes(term),
     );
   }, [items, query]);
+  const pagedTickets = usePaged(visible, 8, query);
 
   const selected = visible.find((item) => item.id === selectedId) ?? visible[0] ?? null;
 
@@ -160,7 +169,7 @@ function StaffSupport() {
         {visible.length === 0 ? (
           <p className="px-4 py-8 text-sm text-slate-500">No support tickets yet.</p>
         ) : (
-          visible.map((item) => (
+          pagedTickets.items.map((item) => (
             <button
               key={item.id}
               onClick={() => setSelectedId(item.id)}
@@ -175,6 +184,7 @@ function StaffSupport() {
             </button>
           ))
         )}
+        <Pagination {...pagerProps(pagedTickets)} />
       </section>
       <section className="card p-5">
         {!selected ? (

@@ -1,40 +1,72 @@
-export function formatStamp(value: string) {
-  return new Date(value).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+const IST = "Asia/Kolkata";
+
+export function parseClinicDate(value: string | Date) {
+  if (value instanceof Date) return value;
+  const raw = value.trim();
+  if (!raw) return new Date(Number.NaN);
+  if (/[zZ]|[+-]\d{2}:\d{2}$/.test(raw)) return new Date(raw);
+  const iso = raw.includes("T") ? raw : `${raw}T00:00:00`;
+  return new Date(`${iso}+05:30`);
+}
+
+function istOptions(extra: Intl.DateTimeFormatOptions): Intl.DateTimeFormatOptions {
+  return { timeZone: IST, ...extra };
+}
+
+export function formatStamp(value: string | Date) {
+  return `${parseClinicDate(value).toLocaleString("en-IN", istOptions({
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }))} IST`;
 }
 
 export function formatTime(value: string) {
-  return new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return parseClinicDate(value).toLocaleTimeString("en-IN", istOptions({ hour: "numeric", minute: "2-digit", hour12: true }));
 }
 
 export function formatDay(value: string | Date) {
-  return new Date(value).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  return parseClinicDate(value).toLocaleDateString("en-IN", istOptions({ weekday: "short", month: "short", day: "numeric" }));
 }
 
 export function formatLongDay(value: string | Date) {
-  return new Date(value).toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  return parseClinicDate(value).toLocaleDateString("en-IN", istOptions({ weekday: "long", month: "long", day: "numeric", year: "numeric" }));
 }
 
 export function formatMonthDay(value: string | Date) {
-  return new Date(value).toLocaleDateString([], { month: "short", day: "numeric" }).toUpperCase();
+  return parseClinicDate(value).toLocaleDateString("en-IN", istOptions({ month: "short", day: "numeric" })).toUpperCase();
 }
 
 export function isoDate(value: Date) {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+  return new Intl.DateTimeFormat("en-CA", istOptions({ year: "numeric", month: "2-digit", day: "2-digit" })).format(value);
 }
 
 export function sameDay(a: string | Date, b: string | Date) {
-  const left = new Date(a);
-  const right = new Date(b);
-  return left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate();
+  const left = parseClinicDate(a);
+  const right = parseClinicDate(b);
+  const leftParts = new Intl.DateTimeFormat("en-CA", istOptions({ year: "numeric", month: "2-digit", day: "2-digit" })).format(left);
+  const rightParts = new Intl.DateTimeFormat("en-CA", istOptions({ year: "numeric", month: "2-digit", day: "2-digit" })).format(right);
+  return leftParts === rightParts;
 }
 
 export function displayStatus(status: string) {
-  if (status === "Scheduled") return "confirmed";
+  if (status === "Scheduled" || status === "Confirmed" || status === "Pending" || status === "Not Attended") return "not attended";
+  if (status === "Partially Paid" || status === "Partial") return "partially paid";
   return status.toLowerCase();
 }
 
 export function toInputValue(date: Date) {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const parts = new Intl.DateTimeFormat("en-CA", istOptions({
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  })).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
 }

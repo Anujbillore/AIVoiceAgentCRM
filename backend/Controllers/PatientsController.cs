@@ -85,9 +85,7 @@ public class PatientsController : ControllerBase
             return NotFound(new { message = "Patient profile not found." });
         }
 
-        ApplySelf(patient, request);
-        await _db.SaveChangesAsync(cancellationToken);
-        return await ToDtoAsync(patient, cancellationToken);
+        return BadRequest(new { message = "Contact the clinic desk to update these details." });
     }
 
     [HttpGet("{id:int}")]
@@ -115,9 +113,15 @@ public class PatientsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
+    [Authorize(Roles = AppRoles.Admin)]
     public async Task<ActionResult<PatientDto>> Create(PatientRequest request, CancellationToken cancellationToken)
     {
+        var invalid = ValidatePatient(request);
+        if (invalid is not null)
+        {
+            return BadRequest(new { message = invalid });
+        }
+
         var patient = new Patient
         {
             Name = request.Name,
@@ -149,6 +153,12 @@ public class PatientsController : ControllerBase
         if (patient is null)
         {
             return NotFound();
+        }
+
+        var invalid = ValidatePatient(request);
+        if (invalid is not null)
+        {
+            return BadRequest(new { message = invalid });
         }
 
         Apply(patient, request);
@@ -536,6 +546,38 @@ public class PatientsController : ControllerBase
 
     private static PatientChargeDto ToChargeDto(PatientCharge charge) =>
         new(charge.Id, charge.PatientId, charge.AppointmentId, charge.Kind, charge.Title, charge.Amount, charge.Notes, charge.ChargeDate);
+
+    private static string? ValidatePatient(PatientRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length < 2)
+        {
+            return "Enter the patient's full name.";
+        }
+
+        if (request.Age is < 1 or > 120)
+        {
+            return "Enter a valid age.";
+        }
+
+        var digits = new string((request.Contact ?? "").Where(char.IsDigit).ToArray());
+        if (digits.Length is < 10 or > 15)
+        {
+            return "Enter a valid mobile number.";
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Email) && (request.Email.Count(c => c == '@') != 1 || !request.Email.Contains('.')))
+        {
+            return "Enter a valid email address.";
+        }
+
+        var emergency = new string((request.EmergencyPhone ?? "").Where(char.IsDigit).ToArray());
+        if (!string.IsNullOrWhiteSpace(request.EmergencyPhone) && emergency.Length is < 10 or > 15)
+        {
+            return "Enter a valid emergency phone number.";
+        }
+
+        return null;
+    }
 
     private static void Apply(Patient patient, PatientRequest request)
     {

@@ -3,6 +3,8 @@ import { CalendarCheck, LifeBuoy, PhoneCall } from "lucide-react";
 import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr";
 import { api, TOKEN_KEY, type ClinicNotification } from "../api/client";
 import { formatStamp } from "../lib/format";
+import { Pagination } from "../components/Pagination";
+import { pagerProps, usePaged } from "../lib/pager";
 
 export function NotificationsPage() {
   const [notices, setNotices] = useState<ClinicNotification[]>([]);
@@ -47,6 +49,7 @@ export function NotificationsPage() {
     if (filter === "support") return item.tag.toLowerCase().includes("support");
     return true;
   });
+  const pagedNotices = usePaged(visible, 8, filter);
 
   function iconFor(tag: string) {
     const value = tag.toLowerCase();
@@ -83,7 +86,7 @@ export function NotificationsPage() {
         {visible.length === 0 ? (
           <p className="px-5 py-8 text-sm text-slate-500">No notifications yet.</p>
         ) : (
-          visible.map((item) => {
+          pagedNotices.items.map((item) => {
             const Icon = iconFor(item.tag);
             return (
               <article
@@ -109,6 +112,7 @@ export function NotificationsPage() {
             );
           })
         )}
+        <Pagination {...pagerProps(pagedNotices)} />
       </section>
     </div>
   );

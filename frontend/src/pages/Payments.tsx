@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api, type Invoice, type Patient, type Payment } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import { isPositiveAmount } from "../lib/validate";
+import { Pagination } from "../components/Pagination";
+import { pagerProps, usePaged } from "../lib/pager";
 
 function money(value: number) {
   return `₹${value.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
@@ -28,9 +31,9 @@ function printReceipt(payment: Payment) {
   win.print();
 }
 
-export function PaymentsPage() {
+export function PaymentsPage({ embedded = false }: { embedded?: boolean }) {
   const { user } = useAuth();
-  const canEdit = user?.role === "Admin" || user?.role === "Doctor";
+  const canEdit = user?.role === "Admin";
   const [payments, setPayments] = useState<Payment[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -43,6 +46,7 @@ export function PaymentsPage() {
     splits: [{ method: "UPI", amount: 0 }],
   });
 
+  const pagedPayments = usePaged(payments, 8);
   const openInvoices = useMemo(
     () => invoices.filter((invoice) => invoice.patientId === form.patientId && invoice.balance > 0 && invoice.status !== "Cancelled"),
     [invoices, form.patientId],
@@ -67,6 +71,14 @@ export function PaymentsPage() {
   async function collect(e: FormEvent) {
     e.preventDefault();
     setError("");
+    if (!form.patientId) {
+      setError("Select a patient.");
+      return;
+    }
+    if (form.splits.some((split) => !isPositiveAmount(split.amount))) {
+      setError("Enter a payment amount greater than 0.");
+      return;
+    }
     try {
       await api.post("/payments", {
         patientId: form.patientId,
@@ -83,7 +95,7 @@ export function PaymentsPage() {
   }
 
   async function submitRefund() {
-    if (!refund.id || !refund.amount) return;
+    if (!refund.id || !isPositiveAmount(refund.amount)) return;
     await api.post(`/payments/${refund.id}/refund`, { amount: refund.amount, reason: refund.reason });
     setRefund({ id: 0, amount: 0, reason: "" });
     await load();
@@ -91,12 +103,14 @@ export function PaymentsPage() {
 
   return (
     <div className="space-y-6">
+      {!embedded && (
       <div>
-        <h2 className="font-display text-2xl">Payments & POS</h2>
+        <h2 className="font-display text-2xl">Payment history</h2>
         <p className="text-sm text-slate-500">
-          Cash, card, UPI, and ACH. Split a bill across methods. Card/UPI/ACH go through the demo payment gateway and return a reference.
+          Record cash, card, UPI, or ACH against a patient bill.
         </p>
       </div>
+      )}
 
       {canEdit && (
         <form onSubmit={collect} className="card space-y-4 p-5">
@@ -204,7 +218,7 @@ export function PaymentsPage() {
               </tr>
             </thead>
             <tbody>
-              {payments.map((payment) => (
+              {pagedPayments.items.map((payment) => (
                 <tr key={payment.id} className="border-t border-slate-100">
                   <td className="px-5 py-3 font-medium">
                     {payment.receiptNumber}
@@ -235,6 +249,7 @@ export function PaymentsPage() {
             </tbody>
           </table>
         </div>
+        <Pagination {...pagerProps(pagedPayments)} />
       </section>
     </div>
   );

@@ -49,17 +49,24 @@ public class FinanceService : IFinanceService
     {
         var patient = await _db.Patients.FirstOrDefaultAsync(p => p.Id == request.PatientId, cancellationToken)
             ?? throw new InvalidOperationException("Patient not found.");
-        var lines = (request.Lines ?? []).Where(l => !string.IsNullOrWhiteSpace(l.Description) && l.Quantity > 0).ToList();
+        if (request.PatientId < 1)
+        {
+            throw new InvalidOperationException("Select a patient.");
+        }
+
+        var lines = (request.Lines ?? [])
+            .Where(l => !string.IsNullOrWhiteSpace(l.Description) && l.Quantity > 0 && l.UnitPrice > 0)
+            .ToList();
         if (lines.Count == 0)
         {
-            throw new InvalidOperationException("Add at least one invoice line.");
+            throw new InvalidOperationException("Add at least one bill item with a description, quantity, and price.");
         }
 
         var invoice = new Invoice
         {
             PatientId = patient.Id,
             AppointmentId = request.AppointmentId,
-            Status = "Issued",
+            Status = "Generated",
             IssuedAt = DateTime.UtcNow,
             DueAt = DateTime.UtcNow.AddDays(7),
             Notes = request.Notes ?? string.Empty,
@@ -91,7 +98,7 @@ public class FinanceService : IFinanceService
             throw new InvalidOperationException("Cancelled invoices cannot be reissued.");
         }
 
-        invoice.Status = invoice.PaidAmount >= invoice.Total && invoice.Total > 0 ? "Paid" : "Issued";
+        invoice.Status = invoice.PaidAmount >= invoice.Total && invoice.Total > 0 ? "Paid" : "Generated";
         await _db.SaveChangesAsync(cancellationToken);
         return ToInvoiceDto(invoice);
     }
@@ -128,6 +135,11 @@ public class FinanceService : IFinanceService
 
     public async Task<PaymentDto> CollectPaymentAsync(PaymentCreateRequest request, CancellationToken cancellationToken)
     {
+        if (request.PatientId < 1)
+        {
+            throw new InvalidOperationException("Select a patient.");
+        }
+
         var patient = await _db.Patients.FirstOrDefaultAsync(p => p.Id == request.PatientId, cancellationToken)
             ?? throw new InvalidOperationException("Patient not found.");
         var splits = (request.Splits ?? [])
@@ -366,7 +378,7 @@ public class FinanceService : IFinanceService
             return;
         }
 
-        invoice.Status = invoice.PaidAmount > 0 ? "Partial" : "Issued";
+        invoice.Status = invoice.PaidAmount > 0 ? "Partially Paid" : "Generated";
     }
 
     private static string CanonicalMethod(string method) =>

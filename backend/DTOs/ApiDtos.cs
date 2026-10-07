@@ -116,10 +116,21 @@ public record DoctorDto(
     List<ScheduleDto> Schedules);
 
 public record BookAppointmentRequest(
-    [Required] int PatientId,
-    [Required] int DoctorId,
+    [Range(1, int.MaxValue)] int PatientId,
+    [Range(1, int.MaxValue)] int DoctorId,
     [Required] DateTime ScheduledAt,
     string Notes);
+
+public record BookNewPatientRequest(
+    [Required] string Name,
+    [Range(1, 120)] int Age,
+    [Required] string Contact,
+    string? Email,
+    string? Address,
+    string? Notes,
+    [Range(1, int.MaxValue)] int DoctorId,
+    [Required] DateTime ScheduledAt,
+    string? AppointmentNotes);
 
 public record RescheduleRequest([Required] DateTime ScheduledAt);
 
@@ -226,7 +237,8 @@ public record VoiceStatusDto(
     string CallEndedWebhook = "",
     string AgentEndedWebhook = "",
     string WebhookSecret = "",
-    string ClinicPhone = "");
+    string ClinicPhone = "",
+    string CallbackWebhook = "");
 
 public record VoiceTurnResponse(
     string AgentName,
@@ -322,11 +334,11 @@ public record EmailMessageDto(int Id, string Recipient, string Subject, string B
 public record InvoiceLineRequest(string Description, decimal Quantity, decimal UnitPrice);
 
 public record InvoiceCreateRequest(
-    [Required] int PatientId,
+    [Range(1, int.MaxValue)] int PatientId,
     int? AppointmentId,
     string Notes,
-    decimal Tax,
-    decimal Discount,
+    [Range(0, 10000000)] decimal Tax,
+    [Range(0, 10000000)] decimal Discount,
     List<InvoiceLineRequest> Lines);
 
 public record InvoiceLineDto(int Id, string Description, decimal Quantity, decimal UnitPrice, decimal Amount);
@@ -354,7 +366,7 @@ public record InvoiceDto(
 public record PaymentSplitRequest(string Method, decimal Amount);
 
 public record PaymentCreateRequest(
-    [Required] int PatientId,
+    [Range(1, int.MaxValue)] int PatientId,
     int? InvoiceId,
     string Notes,
     List<PaymentSplitRequest> Splits);

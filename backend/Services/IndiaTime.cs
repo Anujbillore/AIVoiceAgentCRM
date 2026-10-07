@@ -23,6 +23,12 @@ public static class IndiaTime
         return TimeZoneInfo.ConvertTimeToUtc(unspecified, Zone);
     }
 
+    public static DateTime ToIstFromStoredUtc(DateTime value)
+    {
+        var utc = value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+        return DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(utc, Zone), DateTimeKind.Unspecified);
+    }
+
     public static DateTime StartOfDayIst(DateTime date) =>
         DateTime.SpecifyKind(date.Date, DateTimeKind.Unspecified);
 

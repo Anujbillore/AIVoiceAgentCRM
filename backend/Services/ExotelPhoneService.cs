@@ -101,7 +101,7 @@ public class ExotelPhoneService : IExotelPhoneService
             false,
             phoneSid,
             IncomingUrl,
-            "This Exotel trial cannot store a custom Voice URL (API returned 400). App Bazaar has no Use my own URL. Email Exotel support (account test6571) and ask them to set incoming Voice/ExoML for 08047283845 to: " + IncomingUrl);
+            $"This Exotel trial cannot store a custom Voice URL (API returned 400). App Bazaar has no Use my own URL. Email Exotel support (account {sid}) and ask them to set incoming Voice/ExoML for this ExoPhone to: " + IncomingUrl);
     }
 
     private async Task<bool> IsAttachedAsync(string phoneSid, CancellationToken cancellationToken)

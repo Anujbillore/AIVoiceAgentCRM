@@ -4,6 +4,7 @@ import {
   Activity,
   Bell,
   CalendarCheck,
+  IndianRupee,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -25,6 +26,7 @@ const titles: Record<string, { title: string; subtitle: string }> = {
   "/patients": { title: "Patients", subtitle: "Search records, visits, and call history" },
   "/support": { title: "Support Tickets", subtitle: "Patient support requests — reply to help them" },
   "/notifications": { title: "Notifications", subtitle: "Bookings, callbacks, and live call alerts" },
+  "/billing": { title: "Billing", subtitle: "Create bills and record payments" },
   "/settings": { title: "Settings", subtitle: "Doctors, voice agent, and clinic setup" },
   "/profile": { title: "My details", subtitle: "Contact info and visit history" },
 };
@@ -32,9 +34,10 @@ const titles: Record<string, { title: string; subtitle: string }> = {
 const clinical = [
   { to: "/", label: "Overview", icon: LayoutDashboard, roles: ["Admin", "Doctor"], end: true },
   { to: "/calls", label: "Call Log", icon: PhoneCall, roles: ["Admin", "Doctor"] },
-  { to: "/appointments", label: "Appointments", icon: CalendarCheck, roles: ["Admin", "Doctor", "Patient"] },
+  { to: "/appointments", label: "Appointments", icon: CalendarCheck, roles: ["Admin", "Patient"] },
   { to: "/patients", label: "Patients", icon: Users, roles: ["Admin", "Doctor"] },
-  { to: "/support", label: "Support", icon: LifeBuoy, roles: ["Admin", "Doctor", "Patient"] },
+  { to: "/billing", label: "Billing", icon: IndianRupee, roles: ["Admin"] },
+  { to: "/support", label: "Support", icon: LifeBuoy, roles: ["Admin", "Patient"] },
 ];
 
 const account = [

@@ -23,7 +23,7 @@ public class SupportController : ControllerBase
     }
 
     [HttpGet("tickets")]
-    [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
+    [Authorize(Roles = AppRoles.Admin)]
     public async Task<ActionResult<List<CallLogDto>>> Tickets(CancellationToken cancellationToken)
     {
         var calls = await _db.CallLogs
@@ -42,7 +42,7 @@ public class SupportController : ControllerBase
     }
 
     [HttpPost("tickets/{id:int}/resolve")]
-    [Authorize(Roles = $"{AppRoles.Admin},{AppRoles.Doctor}")]
+    [Authorize(Roles = AppRoles.Admin)]
     public async Task<ActionResult<CallLogDto>> Resolve(int id, [FromBody] SupportReplyRequest? body, CancellationToken cancellationToken)
     {
         var call = await _db.CallLogs.FirstOrDefaultAsync(c => c.Id == id, cancellationToken);

@@ -20,9 +20,17 @@ public static class CallLogDetails
         if (name == "Unknown caller")
         {
             var guessed = ExtractCallerName(CallText(call));
-            if (!string.IsNullOrWhiteSpace(guessed))
+            if (!string.IsNullOrWhiteSpace(guessed) && CallerIdentity.HasRealName(guessed))
             {
                 name = guessed;
+            }
+            else
+            {
+                var fromPhone = NamedPatientOnPhone(phone, patients);
+                if (!string.IsNullOrWhiteSpace(fromPhone))
+                {
+                    name = fromPhone;
+                }
             }
         }
 
@@ -57,7 +65,7 @@ public static class CallLogDetails
             call.ActionTaken,
             call.Intent,
             call.Transcript,
-            call.Timestamp,
+            IndiaTime.ToIstFromStoredUtc(call.Timestamp),
             call.Outcome,
             call.EscalationReason,
             call.TransferType,
@@ -90,6 +98,15 @@ public static class CallLogDetails
             return call.Summary.Trim();
         }
 
+        if (WantsCallback(CallText(call))
+            || (call.Intent ?? "").Equals("Callback", StringComparison.OrdinalIgnoreCase)
+            || (call.Outcome ?? "").Equals("Callback", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.IsNullOrWhiteSpace(doctor)
+                ? $"{name} requested a callback."
+                : $"{name} requested a callback after speaking about {doctor}.";
+        }
+
         if (!string.IsNullOrWhiteSpace(doctor) && when.HasValue)
         {
             return $"{name} booked with {doctor} for {when:ddd d MMM, h:mm tt} IST.";
@@ -110,7 +127,18 @@ public static class CallLogDetails
     }
 
     public static bool HasIndic(string? text) =>
-        !string.IsNullOrWhiteSpace(text) && text.Any(c => c is >= '\u0900' and <= '\u097F');
+        !string.IsNullOrWhiteSpace(text) && text.Any(IsIndicChar);
+
+    public static bool IsIndicChar(char c) =>
+        c is (>= '\u0900' and <= '\u097F')
+            or (>= '\u0980' and <= '\u09FF')
+            or (>= '\u0A00' and <= '\u0A7F')
+            or (>= '\u0A80' and <= '\u0AFF')
+            or (>= '\u0B00' and <= '\u0B7F')
+            or (>= '\u0B80' and <= '\u0BFF')
+            or (>= '\u0C00' and <= '\u0C7F')
+            or (>= '\u0C80' and <= '\u0CFF')
+            or (>= '\u0D00' and <= '\u0D7F');
 
     public static bool IsGenericSummary(string? summary) =>
         string.IsNullOrWhiteSpace(summary)
@@ -129,16 +157,20 @@ public static class CallLogDetails
         foreach (var pattern in new[]
         {
             @"my name is ([A-Za-z][A-Za-z .']{1,40})",
+            @"i(?:['’])?m ([A-Za-z][A-Za-z .']{1,40})",
             @"i am ([A-Za-z][A-Za-z .']{1,40})",
             @"this is ([A-Za-z][A-Za-z .']{1,40})",
-            @"mera naam ([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .']{1,40})"
+            @"caller(?:\s+name)?(?:\s+is)?[:\s]+([A-Za-z][A-Za-z']{1,20}(?:\s+[A-Za-z][A-Za-z']{1,20}){0,2})",
+            @"callback(?: request)? for ([A-Za-z][A-Za-z']{1,20}(?:\s+[A-Za-z][A-Za-z']{1,20}){0,2})",
+            @"mera naam ([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .']{1,40})",
+            @"naam ([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .']{1,40}) hai"
         })
         {
             var match = Regex.Match(text ?? "", pattern, RegexOptions.IgnoreCase);
             if (match.Success)
             {
                 var name = match.Groups[1].Value.Trim().TrimEnd('.', ',', ' ');
-                if (name.Length >= 2 && !name.Equals("speaking", StringComparison.OrdinalIgnoreCase))
+                if (CallerIdentity.HasRealName(name) && !name.Equals("speaking", StringComparison.OrdinalIgnoreCase))
                 {
                     return name;
                 }
@@ -146,6 +178,22 @@ public static class CallLogDetails
         }
 
         return "";
+    }
+
+    private static string NamedPatientOnPhone(string? phone, IReadOnlyList<Patient>? patients)
+    {
+        var last10 = Last10(phone);
+        if (patients is null || last10.Length < 10)
+        {
+            return "";
+        }
+
+        var matches = patients
+            .Where(p => Last10(p.Contact) == last10 && CallerIdentity.HasRealName(p.Name))
+            .Select(p => p.Name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : "";
     }
 
     public static bool SameDoctor(string? booked, string? doctorName)
@@ -287,14 +335,9 @@ public static class CallLogDetails
 
     public static bool IsCallbackRequested(CallLog call, Appointment? appointment, CallCallback? callback)
     {
-        if (appointment is not null)
+        if (callback is not null && callback.Status.Equals("Completed", StringComparison.OrdinalIgnoreCase))
         {
             return false;
-        }
-
-        if (IsUnansweredForward(call))
-        {
-            return true;
         }
 
         if (callback is not null && callback.Status.Equals("Queued", StringComparison.OrdinalIgnoreCase))
@@ -302,21 +345,43 @@ public static class CallLogDetails
             return true;
         }
 
-        var text = CallText(call);
-        return WantsCallback(text) && AiDidNotResolve(call, text);
+        if ((call.Intent ?? "").Equals("Callback", StringComparison.OrdinalIgnoreCase)
+            || (call.Outcome ?? "").Equals("Callback", StringComparison.OrdinalIgnoreCase)
+            || (call.TransferType ?? "").Equals("Callback", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (IsUnansweredForward(call))
+        {
+            return true;
+        }
+
+        return WantsCallback(CallText(call));
     }
 
     public static bool WantsCallback(string text)
     {
-        var value = text.ToLowerInvariant();
+        var value = (text ?? "").ToLowerInvariant();
         return value.Contains("callback")
             || value.Contains("call back")
             || value.Contains("call me back")
             || value.Contains("call us back")
-            || value.Contains("wapas call")
-            || value.Contains("phone karo")
-            || value.Contains("call karo")
+            || value.Contains("please call me")
+            || value.Contains("call me later")
             || value.Contains("call later")
+            || value.Contains("phone me later")
+            || value.Contains("wapas call")
+            || value.Contains("wapis call")
+            || value.Contains("phir se call")
+            || value.Contains("callback chahiye")
+            || value.Contains("call back chahiye")
+            || value.Contains("call back kar")
+            || value.Contains("कॉल बैक")
+            || value.Contains("कॉलबैक")
+            || value.Contains("वापस कॉल")
+            || value.Contains("बाद में कॉल")
+            || value.Contains("बाद में फोन")
             || value.Contains("speak to a person")
             || value.Contains("talk to a person")
             || value.Contains("talk to someone")
@@ -400,14 +465,24 @@ public static class CallLogDetails
     public static CallCallback? FindCallback(CallLog call, IReadOnlyList<CallCallback> callbacks)
     {
         var phone = Last10(DisplayPhone(call.CallerPhone));
+        if (phone.Length < 10)
+        {
+            return null;
+        }
+
+        if (LooksBooked(call) && !WantsCallback(CallText(call)))
+        {
+            return null;
+        }
+
         return callbacks
             .OrderByDescending(c => c.CreatedAt)
             .FirstOrDefault(c =>
-                (phone.Length >= 10 && Last10(c.CallerPhone) == phone)
-                || (!string.Equals(call.CallerName, "Unknown", StringComparison.OrdinalIgnoreCase)
-                    && !string.IsNullOrWhiteSpace(call.CallerName)
-                    && c.CallerName.Equals(call.CallerName.Trim(), StringComparison.OrdinalIgnoreCase)
-                    && (c.CreatedAt - call.Timestamp).Duration() <= TimeSpan.FromHours(24)));
+                Last10(c.CallerPhone) == phone
+                && (c.CreatedAt - call.Timestamp).Duration() <= TimeSpan.FromHours(2)
+                && (CallerIdentity.SamePerson(c.CallerName, c.CallerPhone, call.CallerName, call.CallerPhone)
+                    || !CallerIdentity.HasRealName(call.CallerName)
+                    || !CallerIdentity.HasRealName(c.CallerName)));
     }
 
     public static Appointment? FindAppointment(CallLog call, IReadOnlyList<Appointment> appointments)
@@ -420,6 +495,13 @@ public static class CallLogDetails
             {
                 return exact;
             }
+        }
+
+        if (!LooksBooked(call)
+            && ((call.Intent ?? "").Equals("Callback", StringComparison.OrdinalIgnoreCase)
+                || (call.Outcome ?? "").Equals("Callback", StringComparison.OrdinalIgnoreCase)))
+        {
+            return null;
         }
 
         Appointment? best = null;

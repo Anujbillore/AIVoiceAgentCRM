@@ -1,10 +1,9 @@
 import { useMemo, useState } from "react";
 import { FileUp } from "lucide-react";
 import { api, DOCUMENT_FOLDERS, downloadPatientDocument, type Appointment, type PatientDocument } from "../api/client";
-
-function formatStamp(value: string) {
-  return new Date(value).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-}
+import { Pagination } from "./Pagination";
+import { pagerProps, usePaged } from "../lib/pager";
+import { formatStamp } from "../lib/format";
 
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -36,10 +35,23 @@ export function PatientDocumentsPanel({
   }, [documents]);
 
   const visible = documents.filter((doc) => doc.category === folder);
+  const pagedDocs = usePaged(visible, 8, folder);
   const active = folders.find((item) => item.id === folder);
 
   async function upload(files: FileList | null) {
-    if (!files?.length) return;
+    if (!files?.length) {
+      setMessage("Choose a document to upload.");
+      return;
+    }
+    const allowed = [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx"];
+    const invalid = Array.from(files).find((file) => {
+      const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+      return !allowed.includes(ext) || file.size > 10_485_760;
+    });
+    if (invalid) {
+      setMessage("Use PDF, JPG, PNG, WEBP, DOC, or DOCX under 10 MB.");
+      return;
+    }
     setUploading(true);
     setMessage("");
     try {
@@ -158,7 +170,7 @@ export function PatientDocumentsPanel({
           <p className="py-6 text-sm text-slate-400">No files in this folder yet.</p>
         ) : (
           <ul className="space-y-2">
-            {visible.map((doc) => (
+            {pagedDocs.items.map((doc) => (
               <li key={doc.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{doc.originalName}</p>
@@ -207,6 +219,7 @@ export function PatientDocumentsPanel({
             ))}
           </ul>
         )}
+        <Pagination {...pagerProps(pagedDocs)} />
       </div>
     </section>
   );

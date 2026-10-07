@@ -37,6 +37,8 @@ public class DashboardController : ControllerBase
         [FromQuery] int pageSize = 8,
         [FromQuery] int upcomingPage = 1,
         [FromQuery] int upcomingPageSize = 5,
+        [FromQuery] string? sort = "latest",
+        [FromQuery] string? upcomingSort = "latest",
         CancellationToken cancellationToken = default)
     {
         var end = (to ?? DateTime.Today).Date;
@@ -92,9 +94,12 @@ public class DashboardController : ControllerBase
                 && a.ScheduledAt < rangeEndIst)
             .ToListAsync(cancellationToken);
 
-        var callRows = await _db.CallLogs
-            .Where(c => c.Timestamp >= startUtc && c.Timestamp < rangeEndUtc)
-            .OrderByDescending(c => c.Timestamp)
+        var latestFirst = !string.Equals(sort, "oldest", StringComparison.OrdinalIgnoreCase);
+        var upcomingLatest = !string.Equals(upcomingSort, "oldest", StringComparison.OrdinalIgnoreCase);
+        var callQuery = _db.CallLogs.Where(c => c.Timestamp >= startUtc && c.Timestamp < rangeEndUtc);
+        var callRows = await (latestFirst
+            ? callQuery.OrderByDescending(c => c.Timestamp)
+            : callQuery.OrderBy(c => c.Timestamp))
             .ToListAsync(cancellationToken);
 
         var callsInRange = callRows.Count;
@@ -119,13 +124,24 @@ public class DashboardController : ControllerBase
             .Where(a =>
                 (!doctorId.HasValue || a.DoctorId == doctorId)
                 && a.ScheduledAt >= now
-                && (a.Status == "Scheduled" || a.Status == "Booked" || a.Status == "Pending" || a.Status == "Confirmed"))
-            .OrderBy(a => a.ScheduledAt);
+                && (a.Status == "Scheduled" || a.Status == "Booked" || a.Status == "Pending" || a.Status == "Confirmed"));
+        upcomingQuery = upcomingLatest
+            ? upcomingQuery.OrderByDescending(a => a.ScheduledAt)
+            : upcomingQuery.OrderBy(a => a.ScheduledAt);
         var upcomingItemTotal = await upcomingQuery.CountAsync(cancellationToken);
         var upcomingRows = await upcomingQuery
             .Skip((upcomingPage - 1) * upcomingPageSize)
             .Take(upcomingPageSize)
             .ToListAsync(cancellationToken);
+        foreach (var row in upcomingRows)
+        {
+            await _ai.EnsureEnglishAsync(row, cancellationToken);
+            if (row.Patient is not null)
+            {
+                await _ai.EnsureEnglishAsync(row.Patient, cancellationToken);
+            }
+        }
+
         var upcomingItems = upcomingRows.Select(a => AppointmentService.ToDto(a, a.Patient, a.Doctor)).ToList();
 
         var callVolume = new List<DailyCountDto>();
@@ -183,6 +199,20 @@ public class DashboardController : ControllerBase
         foreach (var call in callRows)
         {
             translated |= await _ai.EnsureEnglishAsync(call, cancellationToken);
+        }
+
+        foreach (var appointment in matchedAppointments)
+        {
+            translated |= await _ai.EnsureEnglishAsync(appointment, cancellationToken);
+            if (appointment.Patient is not null)
+            {
+                translated |= await _ai.EnsureEnglishAsync(appointment.Patient, cancellationToken);
+            }
+        }
+
+        foreach (var patient in patients)
+        {
+            translated |= await _ai.EnsureEnglishAsync(patient, cancellationToken);
         }
 
         if (translated)

@@ -335,6 +335,7 @@ export interface VoiceStatus {
   agentEndedWebhook?: string;
   webhookSecret?: string;
   clinicPhone?: string;
+  callbackWebhook?: string;
 }
 
 export interface InvoiceLine {

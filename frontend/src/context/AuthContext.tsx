@@ -15,7 +15,13 @@ function readUser(): AuthUser | null {
   const token = localStorage.getItem(TOKEN_KEY);
   if (!raw || !token) return null;
   try {
-    return { ...JSON.parse(raw), token };
+    const parsed = { ...JSON.parse(raw), token } as AuthUser;
+    if (parsed.expiresAt && new Date(parsed.expiresAt).getTime() <= Date.now()) {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem("clinic.user");
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }

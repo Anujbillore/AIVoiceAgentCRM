@@ -2,6 +2,7 @@ using AiVoicePortal.Api.Data;
 using AiVoicePortal.Api.DTOs;
 using AiVoicePortal.Api.Hubs;
 using AiVoicePortal.Api.Models;
+using AiVoicePortal.Api.Services;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
@@ -51,12 +52,13 @@ public class VoiceAgentService : IVoiceAgentService
     {
         var settings = await _db.AiSettings.FirstAsync(cancellationToken);
         var root = publicBaseUrl.TrimEnd('/');
-        var secret = _config["SarvamManaged:WebhookSecret"] ?? string.Empty;
+        var secret = (_config["SarvamManaged:WebhookSecret"] ?? string.Empty).Trim();
         var clinicPhone = NormalizeClinicPhone(_config["Exotel:ClinicPhone"]);
-        var keyQuery = string.IsNullOrWhiteSpace(secret) ? "" : $"?key={secret}";
-        var phoneQuery = string.IsNullOrWhiteSpace(secret)
-            ? $"?phone={clinicPhone}"
-            : $"?phone={clinicPhone}&key={secret}";
+        var keyPath = string.IsNullOrWhiteSpace(secret) ? "" : $"/{Uri.EscapeDataString(secret)}";
+        var keyQuery = string.IsNullOrWhiteSpace(secret) ? "" : $"key={Uri.EscapeDataString(secret)}";
+        var phoneQuery = string.IsNullOrWhiteSpace(clinicPhone)
+            ? (string.IsNullOrWhiteSpace(keyQuery) ? "" : $"?{keyQuery}")
+            : $"?phone={Uri.EscapeDataString(clinicPhone)}{(string.IsNullOrWhiteSpace(keyQuery) ? "" : $"&{keyQuery}")}";
         return new VoiceStatusDto(
             _ai.IsConfigured,
             settings.AgentName,
@@ -71,13 +73,14 @@ public class VoiceAgentService : IVoiceAgentService
             root,
             _ai.IsConfigured && _exotel.IsConfigured,
             "https://apps.sarvam.ai/api/app-runtime/channels/exotel",
-            $"{root}/api/webhooks/sarvam-managed/agent-context{keyQuery}",
-            $"{root}/api/webhooks/sarvam-managed/check-availability{phoneQuery}",
-            $"{root}/api/webhooks/sarvam-managed/book-appointment{phoneQuery}",
-            $"{root}/api/webhooks/sarvam-managed/call-ended{keyQuery}",
-            $"{root}/api/webhooks/sarvam-managed/agent-ended{keyQuery}",
+            $"{root}/api/webhooks/sarvam-managed/agent-context{keyPath}",
+            $"{root}/api/webhooks/sarvam-managed/check-availability{keyPath}{phoneQuery}",
+            $"{root}/api/webhooks/sarvam-managed/book-appointment{keyPath}{phoneQuery}",
+            $"{root}/api/webhooks/sarvam-managed/call-ended{keyPath}",
+            $"{root}/api/webhooks/sarvam-managed/agent-ended{keyPath}",
             secret,
-            clinicPhone);
+            clinicPhone ?? "",
+            $"{root}/api/webhooks/sarvam-managed/queue-callback{keyPath}{phoneQuery}");
     }
 
     public async Task<VoiceSessionDto> StartAsync(VoiceSessionStartRequest request, string? externalCallId = null, CancellationToken cancellationToken = default)
@@ -152,7 +155,7 @@ public class VoiceAgentService : IVoiceAgentService
             turn.Intent,
             turn.Summary,
             turn.ActionTaken,
-            turn.CallLog ?? new CallLogDto(0, request.CallerName, request.CallerPhone, turn.Summary, turn.ActionTaken, turn.Intent, spoken, DateTime.UtcNow),
+            turn.CallLog ?? new CallLogDto(0, request.CallerName, request.CallerPhone, turn.Summary, turn.ActionTaken, turn.Intent, spoken, IndiaTime.ToIstFromStoredUtc(DateTime.UtcNow)),
             turn.Appointment,
             turn.AudioBase64);
     }

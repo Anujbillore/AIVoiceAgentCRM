@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Activity, Eye, EyeOff } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
+import { isValidEmail } from "../lib/validate";
 
 const demos = [
   { label: "Admin", email: "admin@clinic.com", password: "Admin@123", hint: "Full clinic dashboard" },
@@ -21,13 +22,29 @@ export function LoginPage() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError("");
+    if (!email.trim() || !isValidEmail(email) || !email.includes("@")) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    if (!password.trim()) {
+      setError("Enter your password.");
+      return;
+    }
     setLoading(true);
     try {
       localStorage.setItem("clinic.lastEmail", email.trim());
       const signedIn = await login(email.trim(), password);
       navigate(signedIn.role === "Patient" ? "/appointments" : "/");
-    } catch {
-      setError("That email or password is not correct. Try again, or use Forgot password.");
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number; data?: { message?: string } } })?.response?.status;
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      if (!status) {
+        setError("Cannot reach the clinic server. Refresh this page and try again.");
+      } else if (status === 401) {
+        setError(message || "That email or password is not correct. Try again, or use Forgot password.");
+      } else {
+        setError(message || "Sign-in failed. Try again.");
+      }
     } finally {
       setLoading(false);
     }

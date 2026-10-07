@@ -1,4 +1,5 @@
 using AiVoicePortal.Api.DTOs;
+using AiVoicePortal.Api.Models;
 using AiVoicePortal.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -26,7 +27,7 @@ public class BillingController : ControllerBase
     }
 
     [HttpPost("invoices")]
-    [Authorize(Roles = "Admin,Doctor")]
+    [Authorize(Roles = AppRoles.Admin)]
     public async Task<ActionResult<InvoiceDto>> Create(InvoiceCreateRequest request, CancellationToken cancellationToken)
     {
         try
@@ -40,7 +41,7 @@ public class BillingController : ControllerBase
     }
 
     [HttpPost("invoices/{id:int}/cancel")]
-    [Authorize(Roles = "Admin,Doctor")]
+    [Authorize(Roles = AppRoles.Admin)]
     public async Task<ActionResult<InvoiceDto>> Cancel(int id, CancellationToken cancellationToken)
     {
         try

@@ -1,18 +1,33 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, Clock3, Eye, Mail, Phone, Plus, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Clock3, Mail, Phone, Plus, X } from "lucide-react";
 import { api, type Appointment, type AppointmentPage, type Doctor, type Patient } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
 import { formatDay, formatLongDay, formatMonthDay, formatTime, isoDate, sameDay, toInputValue } from "../lib/format";
 import { useAuth } from "../context/AuthContext";
 import { useSuccessPopup } from "../components/SuccessPopup";
+import { isValidAge, isValidEmail, isValidName, isValidPhone } from "../lib/validate";
+import { SearchableSelect } from "../components/SearchableSelect";
+import { Pagination } from "../components/Pagination";
+import { pagerProps, usePaged } from "../lib/pager";
+import { isSlotTaken, isWithinDoctorHours } from "../lib/slots";
 
-const STATUSES = ["Pending", "Scheduled", "Completed", "Cancelled", "No Show"];
+const STATUSES = ["Not Attended", "Completed", "Cancelled"];
 
 export function AppointmentsPage() {
   const { user } = useAuth();
   const { showSuccess } = useSuccessPopup();
-  const canManage = user?.role === "Admin" || user?.role === "Doctor";
+  const canManage = user?.role === "Admin";
   const isPatient = user?.role === "Patient";
+  const [bookTab, setBookTab] = useState<"new" | "old">("old");
+  const [newPatient, setNewPatient] = useState({
+    name: "",
+    age: 30,
+    contact: "",
+    email: "",
+    address: "",
+    notes: "",
+  });
+  const [fieldError, setFieldError] = useState("");
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
@@ -43,7 +58,6 @@ export function AppointmentsPage() {
     setAppointments(appt.data.items);
     setForm((current) => ({
       ...current,
-      patientId: current.patientId || pat.data[0]?.id || 0,
       doctorId: current.doctorId || active[0]?.id || 0,
     }));
   }
@@ -53,11 +67,11 @@ export function AppointmentsPage() {
   }, []);
 
   const dayItems = useMemo(
-    () => appointments.filter((item) => sameDay(item.scheduledAt, selectedDay)).sort((a, b) => +new Date(a.scheduledAt) - +new Date(b.scheduledAt)),
+    () => appointments.filter((item) => sameDay(item.scheduledAt, selectedDay)),
     [appointments, selectedDay],
   );
   const upcoming = useMemo(
-    () => appointments.filter((item) => new Date(item.scheduledAt) >= new Date() && item.status !== "Cancelled").slice(0, 8),
+    () => appointments.filter((item) => new Date(item.scheduledAt) >= new Date() && item.status !== "Cancelled"),
     [appointments],
   );
   const todayIso = isoDate(new Date());
@@ -72,18 +86,70 @@ export function AppointmentsPage() {
     const matchesStatus = statusFilter === "all" || item.status === statusFilter;
     return matchesTerm && matchesStatus;
   });
+  const pagedAppointments = usePaged(filtered, 8, `${query}|${statusFilter}`);
+  const pagedUpcoming = usePaged(upcoming, 8);
+  const pagedDayItems = usePaged(dayItems, 8, selectedDay.toDateString());
+  const selectedDoctor = doctors.find((doctor) => doctor.id === form.doctorId);
+  const outsideHours = Boolean(form.doctorId && form.scheduledAt && !isWithinDoctorHours(selectedDoctor, form.scheduledAt));
 
   async function book(e: FormEvent) {
     e.preventDefault();
     setError("");
+    setFieldError("");
     setMessage("");
+    if (!form.doctorId) {
+      setFieldError("Select a doctor.");
+      return;
+    }
+    if (!form.scheduledAt) {
+      setFieldError("Select a date and time.");
+      return;
+    }
+    if (isSlotTaken(appointments, form.doctorId, form.scheduledAt)) {
+      setFieldError("That slot is already booked for this doctor. Choose another time.");
+      return;
+    }
     try {
-      await api.post("/appointment/book", {
-        patientId: form.patientId,
-        doctorId: form.doctorId,
-        scheduledAt: new Date(form.scheduledAt).toISOString(),
-        notes: form.notes,
-      });
+      if (bookTab === "new") {
+        if (!isValidName(newPatient.name)) {
+          setFieldError("Enter the patient's full name.");
+          return;
+        }
+        if (!isValidAge(Number(newPatient.age))) {
+          setFieldError("Enter a valid age.");
+          return;
+        }
+        if (!isValidPhone(newPatient.contact)) {
+          setFieldError("Enter a valid mobile number.");
+          return;
+        }
+        if (!isValidEmail(newPatient.email)) {
+          setFieldError("Enter a valid email address.");
+          return;
+        }
+        await api.post("/appointment/book-new-patient", {
+          name: newPatient.name.trim(),
+          age: Number(newPatient.age),
+          contact: newPatient.contact.trim(),
+          email: newPatient.email.trim(),
+          address: newPatient.address.trim(),
+          notes: newPatient.notes.trim(),
+          doctorId: form.doctorId,
+          scheduledAt: new Date(form.scheduledAt).toISOString(),
+          appointmentNotes: form.notes,
+        });
+      } else {
+        if (!form.patientId) {
+          setFieldError("Search and select an existing patient.");
+          return;
+        }
+        await api.post("/appointment/book", {
+          patientId: form.patientId,
+          doctorId: form.doctorId,
+          scheduledAt: new Date(form.scheduledAt).toISOString(),
+          notes: form.notes,
+        });
+      }
       setOpenBook(false);
       setMessage("Appointment booked.");
       showSuccess("Details Submitted");
@@ -159,8 +225,8 @@ export function AppointmentsPage() {
       {message && <p className="rounded-xl bg-teal-50 px-3 py-2 text-sm text-teal-800">{message}</p>}
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Today's total" value={todayItems.length} className="bg-teal-50" />
-        <Metric label="Confirmed" value={todayItems.filter((i) => i.status === "Scheduled" || i.status === "Confirmed").length} className="bg-emerald-50" />
-        <Metric label="Pending" value={todayItems.filter((i) => i.status === "Pending").length} className="bg-amber-50" />
+        <Metric label="Not attended" value={todayItems.filter((i) => i.status === "Not Attended" || i.status === "Scheduled" || i.status === "Pending").length} className="bg-amber-50" />
+        <Metric label="Cancelled" value={todayItems.filter((i) => i.status === "Cancelled").length} className="bg-slate-50" />
         <Metric label="Completed" value={appointments.filter((i) => i.status === "Completed" && isoDate(new Date(i.scheduledAt)) === todayIso).length} className="bg-rose-50" />
       </section>
 
@@ -201,7 +267,7 @@ export function AppointmentsPage() {
             {dayItems.length === 0 ? (
               <p className="text-sm text-slate-500">No visits on this day.</p>
             ) : (
-              dayItems.map((item) => (
+              pagedDayItems.items.map((item) => (
                 <button key={item.id} onClick={() => setDetail(item)} className="flex w-full items-start justify-between rounded-2xl border border-slate-100 px-4 py-3 text-left hover:bg-slate-50">
                   <div>
                     <p className="text-sm font-semibold text-teal-800">{formatTime(item.scheduledAt)}</p>
@@ -213,6 +279,7 @@ export function AppointmentsPage() {
                 </button>
               ))
             )}
+            <Pagination {...pagerProps(pagedDayItems)} />
           </div>
         </div>
       </section>
@@ -228,7 +295,16 @@ export function AppointmentsPage() {
             </p>
           </div>
           {canManage && (
-            <button className="btn-primary" onClick={() => setOpenBook(true)}>
+            <button
+              className="btn-primary"
+              onClick={() => {
+                setBookTab("old");
+                setFieldError("");
+                setError("");
+                setForm((current) => ({ ...current, patientId: 0 }));
+                setOpenBook(true);
+              }}
+            >
               <Plus className="h-4 w-4" /> New Appointment
             </button>
           )}
@@ -239,7 +315,7 @@ export function AppointmentsPage() {
             <option value="all">All Statuses</option>
             {STATUSES.map((status) => (
               <option key={status} value={status}>
-                {status === "Scheduled" ? "Confirmed" : status}
+                {status}
               </option>
             ))}
           </select>
@@ -254,12 +330,11 @@ export function AppointmentsPage() {
                 <th className="px-5 py-3 font-medium">Call summary</th>
                 <th className="px-5 py-3 font-medium">Scheduled</th>
                 <th className="px-5 py-3 font-medium">Status</th>
-                <th className="px-5 py-3 font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((item) => (
-                <tr key={item.id} className="border-t border-slate-100">
+              {pagedAppointments.items.map((item) => (
+                <tr key={item.id} className="cursor-pointer border-t border-slate-100 hover:bg-slate-50" onClick={() => setDetail(item)}>
                   <td className="px-5 py-3 font-medium">{item.patientName}</td>
                   <td className="px-5 py-3">{item.patientContact || "—"}</td>
                   <td className="px-5 py-3">{item.doctorName}</td>
@@ -267,10 +342,10 @@ export function AppointmentsPage() {
                   <td className="px-5 py-3">{formatDay(item.scheduledAt)} {formatTime(item.scheduledAt)}</td>
                   <td className="px-5 py-3">
                     {canManage ? (
-                      <select className="w-auto" value={item.status} onChange={(e) => void setStatus(item.id, e.target.value)}>
+                      <select className="w-auto" value={item.status} onClick={(e) => e.stopPropagation()} onChange={(e) => void setStatus(item.id, e.target.value)}>
                         {[...new Set([...STATUSES, item.status])].map((status) => (
                           <option key={status} value={status}>
-                            {status === "Scheduled" ? "Confirmed" : status}
+                            {status}
                           </option>
                         ))}
                       </select>
@@ -278,22 +353,18 @@ export function AppointmentsPage() {
                       <StatusBadge status={item.status} />
                     )}
                   </td>
-                  <td className="px-5 py-3">
-                    <button className="btn-ghost px-2" onClick={() => setDetail(item)} aria-label="View appointment">
-                      <Eye className="h-4 w-4" />
-                    </button>
-                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        <Pagination {...pagerProps(pagedAppointments)} />
       </section>
 
       <section className="card p-5">
         <h2 className="font-display text-xl">Upcoming — next 30 days</h2>
         <div className="mt-4 space-y-2">
-          {upcoming.map((item) => (
+          {pagedUpcoming.items.map((item) => (
             <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-slate-50 px-4 py-3">
               <div>
                 <p className="text-xs font-semibold uppercase text-teal-700">{formatDay(item.scheduledAt)}</p>
@@ -304,43 +375,88 @@ export function AppointmentsPage() {
             </div>
           ))}
         </div>
+        <Pagination {...pagerProps(pagedUpcoming)} />
       </section>
 
       {openBook && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
-          <form onSubmit={book} className="card w-full max-w-lg space-y-4 p-5">
+          <form onSubmit={book} className="card max-h-[90vh] w-full max-w-lg space-y-4 overflow-y-auto p-5">
             <div className="flex items-center justify-between">
-              <h2 className="font-display text-xl">Book Appointment</h2>
+              <h2 className="font-display text-xl">New Appointment</h2>
               <button type="button" onClick={() => setOpenBook(false)}><X className="h-5 w-5" /></button>
             </div>
-            {error && <p className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
-            <div>
-              <label>Patient name</label>
-              <select value={form.patientId} onChange={(e) => setForm({ ...form, patientId: Number(e.target.value) })}>
-                {patients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+            <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1">
+              <button type="button" className={`rounded-xl px-3 py-2 text-sm font-semibold ${bookTab === "new" ? "bg-white text-teal-800 shadow" : "text-slate-500"}`} onClick={() => { setBookTab("new"); setFieldError(""); }}>
+                New Patient
+              </button>
+              <button type="button" className={`rounded-xl px-3 py-2 text-sm font-semibold ${bookTab === "old" ? "bg-white text-teal-800 shadow" : "text-slate-500"}`} onClick={() => { setBookTab("old"); setFieldError(""); }}>
+                Old Patient
+              </button>
             </div>
+            {(error || fieldError) && <p className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{fieldError || error}</p>}
+            {bookTab === "new" ? (
+              <>
+                <div>
+                  <label>Patient name</label>
+                  <input value={newPatient.name} onChange={(e) => { setNewPatient({ ...newPatient, name: e.target.value }); setFieldError(""); }} required />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label>Age</label>
+                    <input type="number" min={1} max={120} value={newPatient.age} onChange={(e) => setNewPatient({ ...newPatient, age: Number(e.target.value) })} required />
+                  </div>
+                  <div>
+                    <label>Mobile</label>
+                    <input value={newPatient.contact} onChange={(e) => { setNewPatient({ ...newPatient, contact: e.target.value }); setFieldError(""); }} required />
+                  </div>
+                </div>
+                <div>
+                  <label>Email</label>
+                  <input type="email" value={newPatient.email} onChange={(e) => setNewPatient({ ...newPatient, email: e.target.value })} />
+                </div>
+                <div>
+                  <label>Address</label>
+                  <input value={newPatient.address} onChange={(e) => setNewPatient({ ...newPatient, address: e.target.value })} />
+                </div>
+              </>
+            ) : (
+              <SearchableSelect
+                label="Patient"
+                value={form.patientId}
+                onChange={(id) => {
+                  setForm({ ...form, patientId: id });
+                  setFieldError("");
+                }}
+                placeholder="Search by name, phone or UHID"
+                required
+                options={patients.map((patient) => ({
+                  id: patient.id,
+                  label: `${patient.name} · ${patient.contact || patient.uhid}`,
+                  search: `${patient.name} ${patient.contact} ${patient.uhid} ${patient.email}`,
+                }))}
+              />
+            )}
             <div>
-              <label>Contact number</label>
-              <input readOnly value={patients.find((p) => p.id === form.patientId)?.contact || "—"} />
-            </div>
-            <div>
-              <label>Booked with</label>
-              <select value={form.doctorId} onChange={(e) => setForm({ ...form, doctorId: Number(e.target.value) })}>
+              <label>Doctor</label>
+              <select value={form.doctorId} onChange={(e) => setForm({ ...form, doctorId: Number(e.target.value) })} required>
+                <option value={0}>Select doctor</option>
                 {doctors.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.specialization}</option>)}
               </select>
             </div>
             <div>
               <label>Date & time</label>
-              <input type="datetime-local" value={form.scheduledAt} onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })} required />
+              <input type="datetime-local" value={form.scheduledAt} onChange={(e) => { setForm({ ...form, scheduledAt: e.target.value }); setFieldError(""); }} required />
+              {outsideHours && (
+                <p className="mt-1 text-xs text-amber-700">This time is outside the doctor's working hours. Portal booking is still allowed.</p>
+              )}
             </div>
             <div>
-              <label>Call summary / notes</label>
-              <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Any notes..." rows={3} />
+              <label>Notes</label>
+              <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Reason for visit" rows={3} />
             </div>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-ghost" onClick={() => setOpenBook(false)}>Cancel</button>
-              <button className="btn-primary">Book Appointment</button>
+              <button className="btn-primary">{bookTab === "new" ? "Register & book" : "Book appointment"}</button>
             </div>
           </form>
         </div>
@@ -358,9 +474,9 @@ export function AppointmentsPage() {
             <p className="text-sm"><span className="text-slate-500">Contact number:</span> {detail.patientContact || "—"}</p>
             <p className="text-sm"><span className="text-slate-500">Booked with:</span> {detail.doctorName}</p>
             <p className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{detail.notes || "No call summary."}</p>
-            {canManage && detail.status === "Scheduled" && (
+            {canManage && detail.status !== "Completed" && detail.status !== "Cancelled" && (
               <div className="flex gap-2">
-                <button className="btn-primary" onClick={() => void setStatus(detail.id, "Completed").then(() => setDetail(null))}>Mark complete</button>
+                <button className="btn-primary" onClick={() => void setStatus(detail.id, "Completed").then(() => setDetail(null))}>Mark completed</button>
                 <button className="btn-ghost" onClick={() => void setStatus(detail.id, "Cancelled").then(() => setDetail(null))}>Cancel</button>
               </div>
             )}
@@ -405,6 +521,8 @@ function PatientAppointments({
   const [busy, setBusy] = useState(false);
   const upcoming = appointments.filter((item) => item.status !== "Cancelled" && item.status !== "Completed" && item.status !== "No Show" && new Date(item.scheduledAt) >= new Date());
   const history = appointments.filter((item) => !upcoming.some((row) => row.id === item.id));
+  const pagedUpcoming = usePaged(upcoming, 8);
+  const pagedHistory = usePaged(history, 8);
 
   function canManage(item: Appointment) {
     return item.status !== "Cancelled" && item.status !== "Completed" && item.status !== "No Show";
@@ -439,7 +557,7 @@ function PatientAppointments({
           {upcoming.length === 0 ? (
             <p className="card px-5 py-8 text-sm text-slate-500">No upcoming visits.</p>
           ) : (
-            upcoming.map((item) => {
+            pagedUpcoming.items.map((item) => {
               const open = openId === item.id;
               return (
                 <article key={item.id} className="card p-5">
@@ -495,13 +613,14 @@ function PatientAppointments({
               );
             })
           )}
+          <Pagination {...pagerProps(pagedUpcoming)} />
         </div>
       </section>
 
       <section>
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">History — {history.length}</p>
         <div className="mt-3 space-y-3">
-          {history.map((item) => {
+          {pagedHistory.items.map((item) => {
             const open = openId === item.id;
             return (
               <article key={item.id} className="card p-4">
@@ -527,6 +646,7 @@ function PatientAppointments({
               </article>
             );
           })}
+          <Pagination {...pagerProps(pagedHistory)} />
         </div>
       </section>
 
@@ -537,7 +657,7 @@ function PatientAppointments({
               <h2 className="font-display text-xl">Reschedule</h2>
               <button type="button" onClick={() => setRescheduleId(null)}><X className="h-5 w-5" /></button>
             </div>
-            <p className="text-sm text-slate-500">Pick a new date and time. It must fall in the doctor's working hours.</p>
+            <p className="text-sm text-slate-500">Pick a new date and time. A time already booked with this doctor cannot be used.</p>
             <div>
               <label>Date & time</label>
               <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} required />

@@ -39,6 +39,27 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public async Task<ActionResult<AuthResponse>> Register(RegisterRequest request)
     {
+        if (string.IsNullOrWhiteSpace(request.FullName) || request.FullName.Trim().Length < 2)
+        {
+            return BadRequest(new { message = "Enter your full name." });
+        }
+
+        var digits = new string((request.Contact ?? "").Where(char.IsDigit).ToArray());
+        if (digits.Length is < 10 or > 15)
+        {
+            return BadRequest(new { message = "Enter a valid mobile number." });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Email) || request.Email.Count(c => c == '@') != 1 || !request.Email.Contains('.'))
+        {
+            return BadRequest(new { message = "Enter a valid email address." });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 6)
+        {
+            return BadRequest(new { message = "Password must be at least 6 characters." });
+        }
+
         var existing = await _users.FindByEmailAsync(request.Email);
         if (existing is not null)
         {
@@ -67,7 +88,7 @@ public class AuthController : ControllerBase
             UserId = user.Id,
             Name = request.FullName,
             Age = request.Age,
-            Contact = request.Contact,
+            Contact = request.Contact ?? string.Empty,
             Email = request.Email,
             Address = request.Address ?? string.Empty
         };

@@ -16,6 +16,8 @@ public interface ISarvamAiService
     Task<string> ClassifyDocumentAsync(string fileName, CancellationToken cancellationToken = default);
     Task<string> TranslateToEnglishAsync(string text, CancellationToken cancellationToken = default);
     Task<bool> EnsureEnglishAsync(CallLog call, CancellationToken cancellationToken = default);
+    Task<bool> EnsureEnglishAsync(Patient patient, CancellationToken cancellationToken = default);
+    Task<bool> EnsureEnglishAsync(Appointment appointment, CancellationToken cancellationToken = default);
 }
 
 public class SarvamAiService : ISarvamAiService
@@ -453,6 +455,25 @@ public class SarvamAiService : ISarvamAiService
             return text;
         }
 
+        foreach (var source in new[] { "auto", "gu-IN", "hi-IN" })
+        {
+            var translated = await TranslateChunkedAsync(text, source, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(translated) && !CallLogDetails.HasIndic(translated))
+            {
+                return translated.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(translated))
+            {
+                text = translated;
+            }
+        }
+
+        return text;
+    }
+
+    private async Task<string> TranslateChunkedAsync(string text, string sourceLanguage, CancellationToken cancellationToken)
+    {
         var chunks = new List<string>();
         for (var i = 0; i < text.Length; i += 900)
         {
@@ -460,7 +481,7 @@ public class SarvamAiService : ISarvamAiService
             var payload = new
             {
                 input = chunk,
-                source_language_code = "hi-IN",
+                source_language_code = sourceLanguage,
                 target_language_code = "en-IN",
                 model = "mayura:v1",
                 mode = "formal"
@@ -474,7 +495,7 @@ public class SarvamAiService : ISarvamAiService
             var json = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Sarvam translate failed: {Status} {Body}", response.StatusCode, json);
+                _logger.LogWarning("Sarvam translate failed ({Source}): {Status} {Body}", sourceLanguage, response.StatusCode, json);
                 chunks.Add(chunk);
                 continue;
             }
@@ -500,5 +521,33 @@ public class SarvamAiService : ISarvamAiService
         if (transcript != call.Transcript) { call.Transcript = transcript; changed = true; }
         if (name != call.CallerName) { call.CallerName = name; changed = true; }
         return changed;
+    }
+
+    public async Task<bool> EnsureEnglishAsync(Patient patient, CancellationToken cancellationToken = default)
+    {
+        var changed = false;
+        var name = await TranslateToEnglishAsync(patient.Name, cancellationToken);
+        var notes = await TranslateToEnglishAsync(patient.Notes, cancellationToken);
+        if (name != patient.Name) { patient.Name = name; changed = true; }
+        if (notes != patient.Notes) { patient.Notes = notes; changed = true; }
+        if (CallerIdentity.IsMissingPhone(patient.Contact))
+        {
+            patient.Contact = CallerIdentity.WebTestPhone;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    public async Task<bool> EnsureEnglishAsync(Appointment appointment, CancellationToken cancellationToken = default)
+    {
+        var notes = await TranslateToEnglishAsync(appointment.Notes, cancellationToken);
+        if (notes == appointment.Notes)
+        {
+            return false;
+        }
+
+        appointment.Notes = notes;
+        return true;
     }
 }

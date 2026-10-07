@@ -2,6 +2,9 @@ import { useEffect, useState, type FormEvent } from "react";
 import { specializationOptions } from "../data/specializations";
 import { api, type AiSettings, type Doctor, type ExotelNumber, type SystemStatus, type VoiceStatus } from "../api/client";
 import { useSuccessPopup } from "../components/SuccessPopup";
+import { isValidEmail, isValidName, isValidPhone } from "../lib/validate";
+import { Pagination } from "../components/Pagination";
+import { pagerProps, usePaged } from "../lib/pager";
 
 const DAYS = [
   { value: 0, label: "Sunday" },
@@ -60,6 +63,8 @@ export function SettingsPage() {
   const [smtpPassword, setSmtpPassword] = useState("");
   const [emailError, setEmailError] = useState("");
   const [emailSaving, setEmailSaving] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const pagedDoctors = usePaged(doctors, 8);
 
   async function load() {
     const [doc, settings, status, voiceStatus] = await Promise.all([
@@ -87,6 +92,10 @@ export function SettingsPage() {
   async function saveSmtp(e: FormEvent) {
     e.preventDefault();
     setEmailError("");
+    if (smtpPassword.replace(/\s/g, "").length < 8) {
+      setEmailError("Paste the Gmail App Password.");
+      return;
+    }
     setEmailSaving(true);
     try {
       await api.put("/settings/email", { password: smtpPassword });
@@ -110,8 +119,24 @@ export function SettingsPage() {
       startTime: doctorForm.days[day.value].startTime,
       endTime: doctorForm.days[day.value].endTime,
     }));
+    if (!isValidName(doctorForm.name)) {
+      setDoctorError("Enter the doctor's full name.");
+      return;
+    }
+    if (!isValidEmail(doctorForm.email) || !doctorForm.email.trim()) {
+      setDoctorError("Enter a valid email address.");
+      return;
+    }
+    if (doctorForm.phone && !isValidPhone(doctorForm.phone)) {
+      setDoctorError("Enter a valid phone number.");
+      return;
+    }
     if (!doctorForm.specialization.trim()) {
       setDoctorError("Select a specialization.");
+      return;
+    }
+    if (!editingId && doctorForm.password.length < 6) {
+      setDoctorError("Set a password with at least 6 characters.");
       return;
     }
 
@@ -166,6 +191,12 @@ export function SettingsPage() {
   async function saveAi(e: FormEvent) {
     e.preventDefault();
     if (!ai) return;
+    if (!ai.agentName.trim() || !ai.welcomeMessage.trim()) {
+      setSaved("");
+      setAiError("Agent name and welcome message are required.");
+      return;
+    }
+    setAiError("");
     await api.put("/settings/ai", ai);
     setSaved("AI settings saved.");
     showSuccess("Details Submitted");
@@ -197,10 +228,8 @@ export function SettingsPage() {
         <section className="card xl:col-span-2 p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="font-display text-xl">Supabase database</h2>
-              <p className="text-sm text-slate-500">
-                {system.provider} · {system.host}
-              </p>
+              <h2 className="font-display text-xl">Clinic database</h2>
+              <p className="text-sm text-slate-500">Patient, appointment, and call records</p>
             </div>
             <span
               className={`rounded-full px-3 py-1 text-xs font-semibold ${
@@ -389,7 +418,7 @@ export function SettingsPage() {
             <h2 className="font-display text-xl">Doctors & timings</h2>
           </div>
           <ul className="divide-y divide-slate-100">
-            {doctors.map((doctor) => (
+            {pagedDoctors.items.map((doctor) => (
               <li key={doctor.id} className="flex items-center justify-between px-5 py-4">
                 <div>
                   <p className="font-medium">
@@ -411,6 +440,7 @@ export function SettingsPage() {
               </li>
             ))}
           </ul>
+          <Pagination {...pagerProps(pagedDoctors)} />
         </div>
       </section>
 
@@ -421,6 +451,7 @@ export function SettingsPage() {
             Saved here and sent to Sarvam through the On-Start agent-context webhook. Also copy welcome and
             instructions into the Sarvam agent if that hook is not configured yet.
           </p>
+          {aiError && <p className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{aiError}</p>}
           {voice && (
             <div className="rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-600">
               Live path: Exotel Voicebot → Sarvam. Portal receives bookings and call logs through the webhooks below.
@@ -433,23 +464,35 @@ export function SettingsPage() {
               <p className="text-sm font-medium text-slate-700">Go live with Exotel Voicebot + Sarvam</p>
               <ol className="list-decimal space-y-1 pl-5 text-xs text-slate-600">
                 <li>
-                  In Sarvam Voice Agents open Deploy → Phone Numbers → Add Connection. Use Exotel account SID, API
-                  key, token, and <code>api.in.exotel.com</code>.
+                  In Sarvam Voice Agents open Deploy → Phone Numbers → Add Connection. Use Exotel account SID{" "}
+                  <code>test6587</code>, API key, token, and <code>api.exotel.com</code>.
                 </li>
                 <li>
-                  Attach clinic number {voice.clinicPhone || "+918047283845"} to the Sarvam agent.
+                  Attach the new ExoPhone from this Exotel account to the Sarvam agent
+                  {voice.clinicPhone ? ` (${voice.clinicPhone})` : ""}.
                 </li>
                 <li>
                   In Exotel App Bazaar edit <strong>Anuj Clinic ExoM</strong>: Call Start → Voicebot only. Paste the
                   Voicebot URL below. Recording on, single channel, MP3.
                 </li>
-                <li>Keep 08047283845 assigned to Anuj Clinic ExoM. Leave the trial PIN flow alone.</li>
+                <li>Assign your new ExoPhone to Anuj Clinic ExoM. Leave the trial PIN flow alone.</li>
                 <li>
-                  In the Sarvam agent add the On-Start URL so the live doctor list from the database is injected.
-                  Map On-Start fields <code>allowed_doctor_names</code> and <code>clinic_doctors</code>. Then add the
-                  tools and On-End URLs below. Availability body fields:{" "}
-                  <code>date</code>, <code>problem</code>, <code>doctor_name</code> (empty first; a name after they
-                  pick; <code>anyone</code> if they have no preference), <code>preferred_time</code>. In each tool
+                  In the Sarvam agent paste <strong>every</strong> URL below as-is, including availability, book,
+                  and On-End — not only On-Start. Each path must include the key. Also add headers{" "}
+                  <code>ngrok-skip-browser-warning=true</code> and <code>X-Webhook-Secret</code>. In Agent Context
+                  click Send, then map all three: <code>agent_name</code> → Agent name,{" "}
+                  <code>agent_description</code> → Agent Description, and{" "}
+                  <code>agent_instructions</code> → Agent Instruction. In the instruction editor use{" "}
+                  <code>{"{{agent_name}}"}</code>, <code>{"{{agent_description}}"}</code>, and{" "}
+                  <code>{"{{agent_instruction}}"}</code>.
+                  Also map <code>allowed_doctor_names</code>, <code>clinic_doctors</code>, and{" "}
+                  <code>caller_phone</code>. The Sarvam <strong>Greeting</strong> field must be only{" "}
+                  <code>{"{{welcome_message}}"}</code> — that is the first line the caller hears.
+                  Web tests use{" "}
+                  <code>7621806924</code> when Sarvam has no live number. Availability body fields:{" "}
+                  <code>date</code>, <code>problem</code> (complaint only), <code>doctor_name</code> (empty first so the tool
+                  lists every clinic doctor; a name after they pick; <code>anyone</code> if they have no preference), <code>preferred_time</code> as a string
+                  such as <code>after 12</code> or <code>12:00</code> — not the default 09:00. In each tool
                   replace the default “Request completed successfully” with the response template below, using{" "}
                   <code>{"{{field}}"}</code> not <code>#field</code>. Then publish and activate that version.
                 </li>
@@ -459,13 +502,24 @@ export function SettingsPage() {
               <CopyRow label="Tool: check_anuj_availability" value={voice.availabilityWebhook ?? ""} onCopy={copyValue} />
               <CopyRow
                 label="Availability response template"
-                value="Say only these clinic doctors: {{doctors_to_say}}. {{spoken_prompt}} Do not invent any other name."
+                value="Say {{spoken_prompt}} Doctors: {{doctors_to_say}}. Open windows: {{open_windows_to_say}}. If ask_time_window is true, ask only morning, afternoon, or evening. Do not read clock times. If they already chose a window, speak only that window's times. Never say no slots when has_evening_slots, has_afternoon_slots, or has_morning_slots is true."
+                onCopy={copyValue}
+              />
+              <CopyRow
+                label="Replace Sarvam Appointment booking text"
+                value="Appointment booking: Always call check_anuj_availability. First leave preferred_time empty and ask only morning, afternoon, or evening. Do not suggest clock times yet. After they pick a window, call again with preferred_time=morning, afternoon, or evening, then speak only that window. Evening = after 4. Never say no slots when has_evening_slots is true."
                 onCopy={copyValue}
               />
               <CopyRow label="Tool: book_anuj_appointment" value={voice.bookAppointmentWebhook ?? ""} onCopy={copyValue} />
               <CopyRow
                 label="Booking response template"
-                value="booked={{booked}}. doctor={{doctor_name}}. {{message}} Confirm only if booked is true."
+                value="If booked is true, say: Okay, booking will be created for {{patient_name}}. Your booking has been successfully created. {{message}} Then ask if they need anything else. If needs_identity is true, ask for full name and number and do not say it is booked."
+                onCopy={copyValue}
+              />
+              <CopyRow label="Tool: queue_anuj_callback" value={voice.callbackWebhook ?? ""} onCopy={copyValue} />
+              <CopyRow
+                label="Callback response template"
+                value="If queued is true, say: I have noted your callback request for {{caller_name}}. Someone from the clinic will call you back. Then ask if they need anything else. Always send caller_name and caller_phone. Never send Unknown."
                 onCopy={copyValue}
               />
               <CopyRow label="On-End call-ended" value={voice.callEndedWebhook ?? ""} onCopy={copyValue} />

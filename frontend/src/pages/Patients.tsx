@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ArrowLeft, ChevronDown, FolderOpen, Stethoscope } from "lucide-react";
-import { api, type Patient, type PatientDetail } from "../api/client";
+import { api, type Appointment, type Patient, type PatientDetail } from "../api/client";
 import { PatientChart } from "../components/PatientChart";
 import { StatusBadge } from "../components/StatusBadge";
 import { formatStamp } from "../lib/format";
 import { useAuth } from "../context/AuthContext";
 import { useSuccessPopup } from "../components/SuccessPopup";
+import { isValidAge, isValidEmail, isValidName, isValidPhone } from "../lib/validate";
+import { Pagination } from "../components/Pagination";
+import { pagerProps, usePaged } from "../lib/pager";
 
 const empty = {
   name: "",
@@ -34,7 +37,7 @@ function initials(name: string) {
 export function PatientsPage() {
   const { user } = useAuth();
   const { showSuccess } = useSuccessPopup();
-  const canEdit = user?.role === "Admin" || user?.role === "Doctor";
+  const canEdit = user?.role === "Admin";
   const canDelete = user?.role === "Admin";
   const [patients, setPatients] = useState<Patient[]>([]);
   const [form, setForm] = useState(empty);
@@ -91,16 +94,37 @@ export function PatientsPage() {
         patient.email.toLowerCase().includes(term),
     );
   }, [patients, query]);
+  const pagedPatients = usePaged(filtered, 8, query);
 
   async function save(e: FormEvent) {
     e.preventDefault();
     setError("");
+    if (!editingId) {
+      setError("Register new patients from Appointments → New Appointment.");
+      return;
+    }
+    if (!isValidName(form.name)) {
+      setError("Enter the patient's full name.");
+      return;
+    }
+    if (!isValidAge(Number(form.age))) {
+      setError("Enter a valid age.");
+      return;
+    }
+    if (!isValidPhone(form.contact)) {
+      setError("Enter a valid mobile number.");
+      return;
+    }
+    if (!isValidEmail(form.email)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    if (form.emergencyPhone && !isValidPhone(form.emergencyPhone)) {
+      setError("Enter a valid emergency phone number.");
+      return;
+    }
     try {
-      if (editingId) {
-        await api.put(`/patients/${editingId}`, form);
-      } else {
-        await api.post("/patients", form);
-      }
+      await api.put(`/patients/${editingId}`, form);
       setForm(empty);
       setEditingId(null);
       showSuccess("Details Submitted");
@@ -209,10 +233,10 @@ export function PatientsPage() {
   }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[380px_1fr]">
-      {canEdit && (
+    <div className={`grid gap-6 ${editingId ? "xl:grid-cols-[380px_1fr]" : ""}`}>
+      {canEdit && editingId && (
         <form onSubmit={save} className="card h-fit space-y-3 p-5">
-          <h2 className="font-display text-xl">{editingId ? "Edit patient" : "Register patient"}</h2>
+          <h2 className="font-display text-xl">Edit patient</h2>
           {error && <p className="text-sm text-rose-600">{error}</p>}
           <div>
             <label>Name</label>
@@ -281,7 +305,7 @@ export function PatientsPage() {
             <textarea rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
           </div>
           <div className="flex gap-2">
-            <button className="btn-primary">{editingId ? "Update" : "Create"}</button>
+            <button className="btn-primary">Update</button>
             {editingId && (
               <button
                 type="button"
@@ -317,7 +341,7 @@ export function PatientsPage() {
             <p className="px-5 py-10 text-center text-slate-500">No patients match that search.</p>
           ) : (
             <div className="divide-y divide-slate-100">
-              {filtered.map((patient) => {
+              {pagedPatients.items.map((patient) => {
                 const open = expandedId === patient.id;
                 const detailRow = detailsById[patient.id];
                 const lastVisit = detailRow?.visits
@@ -361,32 +385,7 @@ export function PatientsPage() {
                               <p className="text-sm"><span className="text-slate-500">Email:</span> {patient.email || "—"}</p>
                             </div>
                             <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Appointment history</p>
-                            {detailRow.visits.length === 0 ? (
-                              <p className="text-sm text-slate-500">No visits yet.</p>
-                            ) : (
-                              <div className="overflow-x-auto rounded-xl bg-white">
-                                <table className="min-w-full text-left text-sm">
-                                  <thead className="text-slate-500">
-                                    <tr>
-                                      <th className="px-3 py-2 font-medium">Date & time</th>
-                                      <th className="px-3 py-2 font-medium">Booked with</th>
-                                      <th className="px-3 py-2 font-medium">Call summary</th>
-                                      <th className="px-3 py-2 font-medium">Status</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {detailRow.visits.map((visit) => (
-                                      <tr key={visit.id} className="border-t border-slate-100">
-                                        <td className="px-3 py-2">{formatStamp(visit.scheduledAt)}</td>
-                                        <td className="px-3 py-2">{visit.doctorName}</td>
-                                        <td className="max-w-xs px-3 py-2 text-slate-600">{visit.notes || "—"}</td>
-                                        <td className="px-3 py-2"><StatusBadge status={visit.status} /></td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
+                            <VisitHistoryTable visits={detailRow.visits} />
                             <button className="btn-primary mt-4" onClick={() => setSelectedId(patient.id)}>
                               Open full chart
                             </button>
@@ -399,8 +398,41 @@ export function PatientsPage() {
               })}
             </div>
           )}
+          <Pagination {...pagerProps(pagedPatients)} />
         </div>
       </div>
+    </div>
+  );
+}
+
+function VisitHistoryTable({ visits }: { visits: Appointment[] }) {
+  const pagedVisits = usePaged(visits, 8);
+  if (visits.length === 0) {
+    return <p className="text-sm text-slate-500">No visits yet.</p>;
+  }
+  return (
+    <div className="overflow-x-auto rounded-xl bg-white">
+      <table className="min-w-full text-left text-sm">
+        <thead className="text-slate-500">
+          <tr>
+            <th className="px-3 py-2 font-medium">Date & time</th>
+            <th className="px-3 py-2 font-medium">Booked with</th>
+            <th className="px-3 py-2 font-medium">Call summary</th>
+            <th className="px-3 py-2 font-medium">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {pagedVisits.items.map((visit) => (
+            <tr key={visit.id} className="border-t border-slate-100">
+              <td className="px-3 py-2">{formatStamp(visit.scheduledAt)}</td>
+              <td className="px-3 py-2">{visit.doctorName}</td>
+              <td className="max-w-xs px-3 py-2 text-slate-600">{visit.notes || "—"}</td>
+              <td className="px-3 py-2"><StatusBadge status={visit.status} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <Pagination {...pagerProps(pagedVisits)} />
     </div>
   );
 }

@@ -9,17 +9,38 @@ public static class AppointmentMail
     public static string FormatWhen(DateTime scheduledLocal) =>
         scheduledLocal.ToString("dddd, d MMM yyyy, h:mm tt") + " IST";
 
-    public static string DoctorBookingBody(string patientName, DateTime scheduledLocal, string approveUrl, string rejectUrl) =>
+    public static string DoctorBookingBody(
+        string doctorName,
+        string patientName,
+        int age,
+        string contact,
+        DateTime scheduledLocal,
+        string approveUrl,
+        string rejectUrl) =>
         $"""
-        Dear Doctor,
+        Dear {DisplayDoctorName(doctorName)},
+
         A new appointment has been booked.
+
         Patient: {patientName}
-        Time: {FormatWhen(scheduledLocal)}
-        Please approve or reject.
+        Age: {age}
+        Contact: {contact}
+        Appointment Time: {FormatWhen(scheduledLocal)}
+
+        Please approve or reject this booking.
 
         Approve: {approveUrl}
         Reject: {rejectUrl}
+
+        Regards,
+        Anuj's AI Assistant
         """;
+
+    public static string DisplayDoctorName(string? name)
+    {
+        var value = string.IsNullOrWhiteSpace(name) ? "Doctor" : name.Trim();
+        return value.StartsWith("Dr", StringComparison.OrdinalIgnoreCase) ? value : $"Dr. {value}";
+    }
 
     public static string DoctorRescheduleBody(string patientName, DateTime scheduledLocal) =>
         $"""

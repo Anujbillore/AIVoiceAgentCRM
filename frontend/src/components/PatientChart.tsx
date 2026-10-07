@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
-import { api, type Appointment, type Patient, type PatientCharge, type PatientDocument } from "../api/client";
+import { useEffect, useMemo, useState } from "react";
+import { api, type Appointment, type Invoice, type Patient, type PatientCharge, type PatientDocument, type Payment } from "../api/client";
 import { PatientDocumentsPanel } from "./PatientDocuments";
-
-function formatStamp(value: string) {
-  return new Date(value).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-}
+import { isPositiveAmount } from "../lib/validate";
+import { StatusBadge } from "./StatusBadge";
+import { Pagination } from "./Pagination";
+import { pagerProps, usePaged } from "../lib/pager";
+import { formatStamp } from "../lib/format";
 
 const chargeKinds = ["Billing", "Daily bill", "Insurance", "Payment"];
 
@@ -25,6 +26,19 @@ export function PatientChart({
 }) {
   const [tab, setTab] = useState<"overview" | "visits" | "records" | "billing">("overview");
   const [bill, setBill] = useState({ kind: "Daily bill", title: "", amount: 0, notes: "", appointmentId: "" });
+  const [billError, setBillError] = useState("");
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+
+  useEffect(() => {
+    void Promise.all([
+      api.get<Invoice[]>("/billing/invoices", { params: { patientId: patient.id } }),
+      api.get<Payment[]>("/payments", { params: { patientId: patient.id } }),
+    ]).then(([inv, pay]) => {
+      setInvoices(inv.data);
+      setPayments(pay.data);
+    });
+  }, [patient.id, charges]);
 
   const timeline = useMemo(() => {
     const events = [
@@ -50,11 +64,28 @@ export function PatientChart({
     return events.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
   }, [visits, documents, charges]);
 
-  const due = charges.filter((c) => c.kind !== "Payment").reduce((sum, c) => sum + c.amount, 0);
-  const paid = charges.filter((c) => c.kind === "Payment").reduce((sum, c) => sum + c.amount, 0);
+  const pagedTimeline = usePaged(timeline, 8);
+  const pagedVisits = usePaged(visits, 8);
+  const pagedInvoices = usePaged(invoices, 8);
+  const pagedPayments = usePaged(payments, 8);
+  const pagedCharges = usePaged(charges, 8);
+  const invoiceDue = invoices.reduce((sum, invoice) => sum + invoice.balance, 0);
+  const invoicePaid = invoices.reduce((sum, invoice) => sum + invoice.paidAmount, 0);
+  const chargeDue = charges.filter((c) => c.kind !== "Payment").reduce((sum, c) => sum + c.amount, 0);
+  const chargePaid = charges.filter((c) => c.kind === "Payment").reduce((sum, c) => sum + c.amount, 0);
+  const due = invoiceDue + chargeDue;
+  const paid = invoicePaid + chargePaid;
 
   async function addCharge() {
-    if (!bill.title || !bill.amount) return;
+    setBillError("");
+    if (!bill.title.trim()) {
+      setBillError("Enter a billing title.");
+      return;
+    }
+    if (!isPositiveAmount(bill.amount)) {
+      setBillError("Enter an amount greater than 0.");
+      return;
+    }
     await api.post(`/patients/${patient.id}/charges`, {
       kind: bill.kind,
       title: bill.title,
@@ -70,7 +101,7 @@ export function PatientChart({
     { id: "overview" as const, label: "Overview" },
     { id: "visits" as const, label: `Visits (${visits.length})` },
     { id: "records" as const, label: `Records (${documents.length})` },
-    { id: "billing" as const, label: `Billing (${charges.length})` },
+    { id: "billing" as const, label: `Billing (${invoices.length + payments.length + charges.length})` },
   ];
 
   return (
@@ -98,7 +129,7 @@ export function PatientChart({
             <p className="text-sm text-slate-400">No chart activity yet.</p>
           ) : (
             <ol className="space-y-3">
-              {timeline.map((event, index) => (
+              {pagedTimeline.items.map((event, index) => (
                 <li key={`${event.kind}-${event.at}-${index}`} className="flex gap-3 rounded-2xl bg-slate-50 px-4 py-3">
                   <span className="mt-0.5 rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-teal-800">{event.kind}</span>
                   <div>
@@ -111,6 +142,7 @@ export function PatientChart({
               ))}
             </ol>
           )}
+          <Pagination {...pagerProps(pagedTimeline)} />
         </section>
       )}
 
@@ -135,7 +167,7 @@ export function PatientChart({
                   </tr>
                 </thead>
                 <tbody>
-                  {visits.map((visit) => (
+                  {pagedVisits.items.map((visit) => (
                     <tr key={visit.id} className="border-t border-slate-100">
                       <td className="px-5 py-3 font-medium">{formatStamp(visit.scheduledAt)}</td>
                       <td className="px-5 py-3">{visit.doctorName}</td>
@@ -153,6 +185,7 @@ export function PatientChart({
               </table>
             </div>
           )}
+          <Pagination {...pagerProps(pagedVisits)} />
         </section>
       )}
 
@@ -164,8 +197,8 @@ export function PatientChart({
         <section className="card space-y-5 p-5">
           <div className="flex flex-wrap justify-between gap-3">
             <div>
-              <h3 className="font-display text-xl">Billing ledger</h3>
-              <p className="text-sm text-slate-500">Structured amounts, not only uploaded PDFs — daily bills, invoices, insurance, and payments.</p>
+              <h3 className="font-display text-xl">Billing history</h3>
+              <p className="text-sm text-slate-500">Bills and payments for this patient.</p>
             </div>
             <div className="text-right text-sm">
               <p className="text-slate-500">Charged ₹{due.toLocaleString("en-IN")}</p>
@@ -173,11 +206,77 @@ export function PatientChart({
             </div>
           </div>
 
+          {invoices.length > 0 && (
+            <div className="overflow-x-auto rounded-2xl bg-slate-50">
+              <table className="min-w-full text-left text-sm">
+                <thead className="text-slate-500">
+                  <tr>
+                    <th className="px-4 py-2 font-medium">Bill</th>
+                    <th className="px-4 py-2 font-medium">Date</th>
+                    <th className="px-4 py-2 font-medium">Status</th>
+                    <th className="px-4 py-2 text-right font-medium">Total</th>
+                    <th className="px-4 py-2 text-right font-medium">Paid</th>
+                    <th className="px-4 py-2 text-right font-medium">Due</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedInvoices.items.map((invoice) => (
+                    <tr key={`inv-${invoice.id}`} className="border-t border-white">
+                      <td className="px-4 py-2 font-medium">
+                        {invoice.number}
+                        <div className="text-xs text-slate-500">{invoice.lines.map((line) => line.description).join(", ")}</div>
+                      </td>
+                      <td className="px-4 py-2">{new Date(invoice.issuedAt).toLocaleDateString()}</td>
+                      <td className="px-4 py-2"><StatusBadge status={invoice.status} /></td>
+                      <td className="px-4 py-2 text-right">₹{invoice.total.toLocaleString("en-IN")}</td>
+                      <td className="px-4 py-2 text-right">₹{invoice.paidAmount.toLocaleString("en-IN")}</td>
+                      <td className="px-4 py-2 text-right font-medium">₹{invoice.balance.toLocaleString("en-IN")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <Pagination {...pagerProps(pagedInvoices)} />
+            </div>
+          )}
+
+          {payments.length > 0 && (
+            <div className="overflow-x-auto rounded-2xl bg-slate-50">
+              <table className="min-w-full text-left text-sm">
+                <thead className="text-slate-500">
+                  <tr>
+                    <th className="px-4 py-2 font-medium">Payment</th>
+                    <th className="px-4 py-2 font-medium">Date</th>
+                    <th className="px-4 py-2 font-medium">Method</th>
+                    <th className="px-4 py-2 font-medium">Reference</th>
+                    <th className="px-4 py-2 text-right font-medium">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedPayments.items.map((payment) => (
+                    <tr key={`pay-${payment.id}`} className="border-t border-white">
+                      <td className="px-4 py-2 font-medium">
+                        {payment.receiptNumber}
+                        <div className="text-xs text-slate-500">{payment.invoiceNumber ?? "Unapplied"}</div>
+                      </td>
+                      <td className="px-4 py-2">{new Date(payment.paidAt).toLocaleDateString()}</td>
+                      <td className="px-4 py-2">{payment.splits.map((split) => split.method).join(" + ")}</td>
+                      <td className="px-4 py-2 text-slate-500">{payment.reference || "—"}</td>
+                      <td className="px-4 py-2 text-right font-medium">₹{payment.amount.toLocaleString("en-IN")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <Pagination {...pagerProps(pagedPayments)} />
+            </div>
+          )}
+
           {canBill && (
-            <div className="grid gap-3 rounded-2xl bg-slate-50 p-4 md:grid-cols-2 xl:grid-cols-5">
+            <div className="space-y-2">
+              {billError && <p className="text-sm text-rose-600">{billError}</p>}
+              <div className="grid gap-3 rounded-2xl bg-slate-50 p-4 md:grid-cols-2 xl:grid-cols-5">
               <div>
                 <label>Type</label>
-                <select value={bill.kind} onChange={(e) => setBill({ ...bill, kind: e.target.value })}>
+                <select value={bill.kind} onChange={(e) => { setBill({ ...bill, kind: e.target.value }); setBillError(""); }}>
                   {chargeKinds.map((kind) => (
                     <option key={kind}>{kind}</option>
                   ))}
@@ -185,11 +284,11 @@ export function PatientChart({
               </div>
               <div>
                 <label>Title</label>
-                <input value={bill.title} onChange={(e) => setBill({ ...bill, title: e.target.value })} placeholder="OPD / ward / lab" />
+                <input value={bill.title} onChange={(e) => { setBill({ ...bill, title: e.target.value }); setBillError(""); }} placeholder="OPD / ward / lab" />
               </div>
               <div>
                 <label>Amount (₹)</label>
-                <input type="number" value={bill.amount} onChange={(e) => setBill({ ...bill, amount: Number(e.target.value) })} />
+                <input type="number" value={bill.amount} onChange={(e) => { setBill({ ...bill, amount: Number(e.target.value) }); setBillError(""); }} />
               </div>
               <div>
                 <label>Visit</label>
@@ -207,12 +306,13 @@ export function PatientChart({
                   Add line
                 </button>
               </div>
+              </div>
             </div>
           )}
 
-          {charges.length === 0 ? (
-            <p className="text-sm text-slate-400">No billing lines yet. Upload a bill PDF in Records, or add a ledger line here.</p>
-          ) : (
+          {invoices.length === 0 && payments.length === 0 && charges.length === 0 ? (
+            <p className="text-sm text-slate-400">No bills or payments yet for this patient.</p>
+          ) : charges.length > 0 ? (
             <table className="min-w-full text-left text-sm">
               <thead className="text-slate-500">
                 <tr>
@@ -225,7 +325,7 @@ export function PatientChart({
                 </tr>
               </thead>
               <tbody>
-                {charges.map((charge) => (
+                {pagedCharges.items.map((charge) => (
                   <tr key={charge.id} className="border-t border-slate-100">
                     <td className="py-2">{new Date(charge.chargeDate).toLocaleDateString()}</td>
                     <td className="py-2">{charge.kind}</td>
@@ -248,6 +348,9 @@ export function PatientChart({
                 ))}
               </tbody>
             </table>
+          ) : null}
+          {charges.length > 0 && (
+            <Pagination {...pagerProps(pagedCharges)} />
           )}
         </section>
       )}

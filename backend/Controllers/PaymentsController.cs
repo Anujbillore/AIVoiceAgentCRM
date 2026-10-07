@@ -1,4 +1,5 @@
 using AiVoicePortal.Api.DTOs;
+using AiVoicePortal.Api.Models;
 using AiVoicePortal.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -26,7 +27,7 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,Doctor")]
+    [Authorize(Roles = AppRoles.Admin)]
     public async Task<ActionResult<PaymentDto>> Collect(PaymentCreateRequest request, CancellationToken cancellationToken)
     {
         try
@@ -40,7 +41,7 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpPost("{id:int}/refund")]
-    [Authorize(Roles = "Admin,Doctor")]
+    [Authorize(Roles = AppRoles.Admin)]
     public async Task<ActionResult<PaymentDto>> Refund(int id, RefundRequest request, CancellationToken cancellationToken)
     {
         try

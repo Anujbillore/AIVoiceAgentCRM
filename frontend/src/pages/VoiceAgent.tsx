@@ -2,17 +2,17 @@ import { useEffect, useState } from "react";
 import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr";
 import { PhoneIncoming } from "lucide-react";
 import { api, TOKEN_KEY, type CallLog, type DashboardStats } from "../api/client";
-
-function formatStamp(value: string) {
-  return new Date(value).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-}
+import { Pagination } from "../components/Pagination";
+import { pagerProps, usePaged } from "../lib/pager";
+import { formatStamp, isoDate } from "../lib/format";
 
 export function VoiceAgentPage() {
   const [calls, setCalls] = useState<CallLog[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const pagedCalls = usePaged(calls, 8);
 
   async function load() {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = isoDate(new Date());
     const { data } = await api.get<DashboardStats>("/dashboard", {
       params: { from: today, to: today, page: 1, pageSize: 20 },
     });
@@ -74,7 +74,7 @@ export function VoiceAgentPage() {
           <p className="mt-3 text-sm text-slate-500">No inbound calls yet today.</p>
         ) : (
           <ul className="mt-4 space-y-3">
-            {calls.map((call) => (
+            {pagedCalls.items.map((call) => (
               <li key={call.id} className="rounded-2xl border border-slate-100 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="font-medium text-slate-900">
@@ -100,6 +100,7 @@ export function VoiceAgentPage() {
             ))}
           </ul>
         )}
+        <Pagination {...pagerProps(pagedCalls)} />
       </section>
     </div>
   );

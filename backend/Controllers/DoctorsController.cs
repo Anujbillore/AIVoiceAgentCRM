@@ -53,6 +53,11 @@ public class DoctorsController : ControllerBase
     [Authorize(Roles = AppRoles.Admin)]
     public async Task<ActionResult<DoctorDto>> Create(DoctorRequest request, CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length < 2)
+        {
+            return BadRequest(new { message = "Enter the doctor's full name." });
+        }
+
         if (string.IsNullOrWhiteSpace(request.Password))
         {
             return BadRequest(new { message = "Set a password so this doctor can sign in with their email." });
@@ -97,6 +102,11 @@ public class DoctorsController : ControllerBase
         if (doctor is null)
         {
             return NotFound();
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length < 2)
+        {
+            return BadRequest(new { message = "Enter the doctor's full name." });
         }
 
         if (request.Schedules is null || request.Schedules.Count == 0)

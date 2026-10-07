@@ -28,7 +28,9 @@ public record SarvamBookResult(
     string LocalStart,
     string? DoctorName,
     string Message,
-    IReadOnlyList<AvailableSlotDto> Alternatives);
+    IReadOnlyList<AvailableSlotDto> Alternatives,
+    string PatientName = "",
+    bool NeedsIdentity = false);
 
 public record SarvamCallImportRequest(
     string AttemptId,
@@ -46,13 +48,29 @@ public record SarvamCallImportResult(int? CallId, bool Imported, bool Duplicate,
 
 public record ClinicRosterDto(string Roster, string AllowedNames, IReadOnlyList<AvailableDoctorDto> Doctors);
 
+public record KnownPatientDto(int Id, string Name, string? Upcoming);
+
+public record KnownCallerDto(
+    string Phone,
+    string DisplayPhone,
+    bool UsedWebTestNumber,
+    bool Returning,
+    IReadOnlyList<KnownPatientDto> Patients,
+    KnownPatientDto? Primary,
+    string WelcomeMessage,
+    string Guidance);
+
 public interface ISarvamManagedService
 {
     Task<ClinicRosterDto> GetClinicRosterAsync(CancellationToken cancellationToken = default);
+    Task<KnownCallerDto> GetKnownCallerAsync(string? phone, CancellationToken cancellationToken = default);
     Task<AvailabilityResult> GetAvailabilityAsync(DateOnly date, int? durationMinutes, string? problem, string? doctorName, string? preferredTime, CancellationToken cancellationToken = default);
     Task<SarvamBookResult> BookAsync(DateTime localStart, string callerName, string callerPhone, string purpose, string? doctorName, CancellationToken cancellationToken = default);
+    Task<SarvamCallbackResult> QueueCallbackAsync(string callerName, string callerPhone, string? reason, CancellationToken cancellationToken = default);
     Task<SarvamCallImportResult> ImportCallAsync(SarvamCallImportRequest request, CancellationToken cancellationToken = default);
 }
+
+public record SarvamCallbackResult(bool Queued, string CallerName, string CallerPhone, string Message);
 
 public class SarvamManagedService : ISarvamManagedService
 {
@@ -89,6 +107,58 @@ public class SarvamManagedService : ISarvamManagedService
             doctors.Select(d => new AvailableDoctorDto(d.Id, d.Name, d.Specialization, 0)).ToList());
     }
 
+    public async Task<KnownCallerDto> GetKnownCallerAsync(string? phone, CancellationToken cancellationToken = default)
+    {
+        var resolved = CallerIdentity.ResolvePhone(phone);
+        _inbound.Remember(resolved);
+        var last10 = CallerIdentity.Last10(resolved);
+        var patients = (await _db.Patients.ToListAsync(cancellationToken))
+            .Where(p => CallerIdentity.Last10(p.Contact) == last10)
+            .OrderBy(p => p.Id)
+            .ToList();
+        var now = IndiaTime.Now;
+        var ids = patients.Select(p => p.Id).ToHashSet();
+        var upcoming = await _db.Appointments
+            .Include(a => a.Doctor)
+            .Where(a => ids.Contains(a.PatientId) && a.Status != "Cancelled" && a.ScheduledAt >= now)
+            .OrderBy(a => a.ScheduledAt)
+            .ToListAsync(cancellationToken);
+        var known = patients.Select(patient =>
+        {
+            var next = upcoming.FirstOrDefault(a => a.PatientId == patient.Id);
+            var when = next is null
+                ? null
+                : $"{next.ScheduledAt:ddd d MMM, h:mm tt} IST with {next.Doctor.Name}";
+            return new KnownPatientDto(patient.Id, patient.Name, when);
+        }).ToList();
+
+        var webTest = CallerIdentity.UsedWebTestFallback(resolved);
+        var display = CallerIdentity.DisplayPhone(resolved);
+        var primary = known.Count == 1 ? known[0] : null;
+        var welcome = known.Count switch
+        {
+            0 => webTest
+                ? "Hello, welcome to Anuj Clinic. How can I help you today?"
+                : "Hello, welcome to Anuj Clinic. How can I help you today?",
+            1 => string.IsNullOrWhiteSpace(primary?.Upcoming)
+                ? $"Welcome back, {primary!.Name}. Nice to hear from you again. How can I help you today?"
+                : $"Welcome back, {primary!.Name}. You already have an appointment {primary.Upcoming}. Ask if they want that visit, a new booking, or something else.",
+            _ => $"Welcome back. This number is registered for {string.Join(" and ", known.Select(p => p.Name))}. Ask who is speaking, then help them."
+        };
+        var guidance = known.Count switch
+        {
+            0 => $"New caller on {display}. Ask their name before booking. Always send caller_phone={resolved} and caller_name.",
+            1 => $"Returning patient {primary!.Name} on {display}. Greet them by name. If they book, send caller_name={primary.Name} and caller_phone={resolved}. Update this existing record; do not create a duplicate.",
+            _ => $"Same number {display} has multiple patients: {string.Join(", ", known.Select(p => p.Name))}. Ask which name, then send that caller_name. If the name is new, create a new patient on this number."
+        };
+        if (webTest)
+        {
+            guidance += " Sarvam web test has no live caller number, so use 7621806924.";
+        }
+
+        return new KnownCallerDto(resolved, display, webTest, known.Count > 0, known, primary, welcome, guidance);
+    }
+
     public async Task<AvailabilityResult> GetAvailabilityAsync(
         DateOnly date,
         int? durationMinutes,
@@ -99,40 +169,52 @@ public class SarvamManagedService : ISarvamManagedService
     {
         var bookable = await GetBookableDoctorsAsync(cancellationToken);
         var allSlots = await LoadSlotsAsync(date, durationMinutes, cancellationToken);
+        var timeHint = ResolvePartOfDayHint(preferredTime, problem);
         if (bookable.Count == 1)
         {
-            return SoleDoctorAvailability(bookable[0], allSlots, preferredTime);
+            return await SoleDoctorOrNextAsync(bookable[0], timeHint, date, durationMinutes, cancellationToken);
         }
 
         var clinicSpecs = bookable.Select(d => d.Specialization).ToList();
         var specialty = MatchSpecialty(problem, clinicSpecs);
         var namedDoctor = NormalizeDoctorChoice(doctorName);
-        var kind = SpecialtyLabel(specialty);
-
-        if (TryParsePreferredTime(preferredTime, out var timeOfDay))
+        if (IsAnyone(doctorName))
         {
-            allSlots = allSlots
-                .Where(s => DateTime.TryParse(s.LocalStart, CultureInfo.InvariantCulture, DateTimeStyles.None, out var slotTime)
-                    && Math.Abs((slotTime.TimeOfDay - timeOfDay).TotalMinutes) <= 30)
-                .ToList();
+            return OfferAnyoneAvailability(bookable, allSlots, timeHint, date);
         }
+
+        if (string.IsNullOrWhiteSpace(namedDoctor))
+        {
+            var pool = bookable;
+            if (!string.IsNullOrWhiteSpace(specialty))
+            {
+                var matched = bookable
+                    .Where(d => DoctorSpecialties.Matches(d.Specialization, specialty))
+                    .ToList();
+                if (matched.Count == 1)
+                {
+                    return await SoleDoctorOrNextAsync(matched[0], timeHint, date, durationMinutes, cancellationToken);
+                }
+
+                if (matched.Count > 1)
+                {
+                    pool = matched;
+                }
+            }
+
+            if (pool.Count > 1)
+            {
+                return AskWhichDoctor(pool, date, allSlots, timeHint);
+            }
+        }
+        var kind = SpecialtyLabel(specialty);
 
         if (!string.IsNullOrWhiteSpace(namedDoctor))
         {
-            var chosen = allSlots
-                .Where(s => DoctorNameMatches(s.DoctorName, namedDoctor))
-                .Take(8)
-                .ToList();
-            if (chosen.Count > 0)
+            var chosenDoctor = bookable.FirstOrDefault(d => DoctorNameMatches(d.Name, namedDoctor));
+            if (chosenDoctor is not null)
             {
-                return new AvailabilityResult(
-                    true,
-                    $"{chosen[0].DoctorName} ({chosen[0].Specialization}) has {chosen.Count} slots. Offer only these times.",
-                    $"Offer only these times with {chosen[0].DoctorName}.",
-                    chosen[0].Specialization,
-                    false,
-                    SummarizeDoctors(chosen),
-                    chosen);
+                return await SoleDoctorOrNextAsync(chosenDoctor, timeHint, date, durationMinutes, cancellationToken);
             }
 
             var others = FilterToSpecialty(allSlots, specialty);
@@ -147,6 +229,15 @@ public class SarvamManagedService : ISarvamManagedService
                 kind,
                 SummarizeDoctors(others),
                 namedDoctor);
+        }
+
+        var window = ClinicDateParser.ParseTimeWindow(timeHint);
+        if (window.Restricts)
+        {
+            allSlots = allSlots
+                .Where(s => ClinicDateParser.TryParseSlotLocal(s.LocalStart, out var slotTime)
+                    && window.Matches(slotTime.TimeOfDay))
+                .ToList();
         }
 
         var slots = FilterToSpecialty(allSlots, specialty);
@@ -164,23 +255,31 @@ public class SarvamManagedService : ISarvamManagedService
         var doctors = SummarizeDoctors(slots);
         if (doctors.Count > 1)
         {
-            return DoctorChoiceResult(true, specialty, kind, doctors, null);
+            return AskWhichDoctor(bookable.Where(d => doctors.Any(x => x.DoctorId == d.Id)).ToList(), date, slots, timeHint);
         }
 
+        if (doctors.Count == 1)
+        {
+            var only = bookable.FirstOrDefault(d => d.Id == doctors[0].DoctorId);
+            if (only is not null)
+            {
+                return await SoleDoctorOrNextAsync(only, timeHint, date, durationMinutes, cancellationToken);
+            }
+        }
+
+        var spoken = slots.Count > 0
+            ? (window.Restricts
+                ? $"Slots are available {SpeakDate(date)} {window.Label} at {SpeakSlotTimes(slots, 5)}. Ask which time they want. Stay on the line. Never hang up."
+                : AskWindowsSpoken("A clinic doctor", date, slots))
+            : $"No {kind} are available on that date. Offer another day. Do not end the call.";
         return new AvailabilityResult(
             slots.Count > 0,
-            slots.Count > 0
-                ? $"{(doctors.Count == 1 ? doctors[0].DoctorName + " is available." : "Slots are available.")} Offer the returned times."
-                : $"No {kind} are available on that date. Offer another day. Do not end the call.",
-            slots.Count > 0
-                ? (doctors.Count == 1
-                    ? $"The only available {kind.TrimEnd('s')} is {doctors[0].DoctorName}. Say only this name, then offer the times."
-                    : "Offer the returned times.")
-                : $"No {kind} are available that day. Offer another day.",
+            spoken,
+            spoken,
             specialty,
             false,
             doctors,
-            slots.Take(8).ToList());
+            slots);
     }
 
     public async Task<SarvamBookResult> BookAsync(
@@ -192,17 +291,22 @@ public class SarvamManagedService : ISarvamManagedService
         CancellationToken cancellationToken = default)
     {
         localStart = DateTime.SpecifyKind(IndiaTime.ToIstLocal(localStart), DateTimeKind.Unspecified);
-        if (string.IsNullOrWhiteSpace(callerPhone))
+        callerPhone = CallerIdentity.ResolvePhone(callerPhone);
+        if (!CallerIdentity.HasRealName(callerName))
         {
-            callerPhone = _inbound.RecentPhone() ?? "";
-        }
-
-        if (string.IsNullOrWhiteSpace(callerName) || callerName.Equals("Unknown", StringComparison.OrdinalIgnoreCase))
-        {
-            callerName = _inbound.RecentName() ?? callerName;
+            callerName = _inbound.RecentNameFor(callerPhone) ?? callerName;
         }
 
         _inbound.Remember(callerPhone, callerName);
+        callerName = await _ai.TranslateToEnglishAsync(callerName, cancellationToken);
+        purpose = await _ai.TranslateToEnglishAsync(purpose, cancellationToken);
+        var identity = await ResolveBookingPatientAsync(callerName, callerPhone, cancellationToken);
+        if (identity.Patient is null)
+        {
+            return new SarvamBookResult(false, null, FormatLocal(localStart), null, identity.Ask, [], NeedsIdentity: true);
+        }
+
+        var patient = identity.Patient;
         var anyone = IsAnyone(doctorName);
         doctorName = anyone ? null : NormalizeDoctorChoice(doctorName);
         var doctors = await GetBookableDoctorsAsync(cancellationToken);
@@ -259,7 +363,6 @@ public class SarvamManagedService : ISarvamManagedService
                 slots.Take(3).ToList());
         }
 
-        var patient = await FindOrCreatePatientAsync(callerName, callerPhone, cancellationToken);
         var already = await _db.Appointments
             .Include(a => a.Doctor)
             .Where(a => a.PatientId == patient.Id && a.Status != "Cancelled" && a.ScheduledAt == localStart)
@@ -272,8 +375,9 @@ public class SarvamManagedService : ISarvamManagedService
                 already.Id,
                 FormatLocal(already.ScheduledAt),
                 already.Doctor.Name,
-                $"Already booked {already.ScheduledAt:h:mm tt} IST with {already.Doctor.Name} for {patient.Name}. Say this doctor's name. Do not book again.",
-                []);
+                BookingSuccessMessage(patient.Name, already.Doctor.Name, already.ScheduledAt),
+                [],
+                patient.Name);
         }
 
         var notes = string.IsNullOrWhiteSpace(purpose)
@@ -292,14 +396,90 @@ public class SarvamManagedService : ISarvamManagedService
                 booked.Id,
                 FormatLocal(booked.ScheduledAt),
                 booked.DoctorName,
-                $"Booked {booked.ScheduledAt:h:mm tt} IST with {booked.DoctorName} for {booked.PatientName}. Say the doctor name {booked.DoctorName}.",
-                []);
+                BookingSuccessMessage(booked.PatientName, booked.DoctorName, booked.ScheduledAt),
+                [],
+                booked.PatientName);
         }
         catch (InvalidOperationException ex)
         {
             var alternatives = await LoadSlotsAsync(DateOnly.FromDateTime(localStart), 30, cancellationToken);
             return new SarvamBookResult(false, null, FormatLocal(localStart), null, ex.Message + " Do not end the call.", alternatives.Take(3).ToList());
         }
+    }
+
+    public async Task<SarvamCallbackResult> QueueCallbackAsync(
+        string callerName,
+        string callerPhone,
+        string? reason,
+        CancellationToken cancellationToken = default)
+    {
+        callerPhone = CallerIdentity.ResolvePhone(callerPhone);
+        var last10 = CallLogDetails.Last10(callerPhone);
+        var since = DateTime.UtcNow.AddMinutes(-30);
+        var recent = await _db.CallLogs
+            .Where(c => c.Timestamp >= since)
+            .OrderByDescending(c => c.Timestamp)
+            .ToListAsync(cancellationToken);
+        var callLog = last10.Length >= 10
+            ? recent.FirstOrDefault(c =>
+                CallerIdentity.PhonesMatch(c.CallerPhone, callerPhone)
+                && !CallLogDetails.LooksBooked(c)
+                && (CallerIdentity.SamePerson(c.CallerName, c.CallerPhone, callerName, callerPhone)
+                    || !CallerIdentity.HasRealName(c.CallerName)
+                    || !CallerIdentity.HasRealName(callerName))
+                && ((c.Intent ?? "").Equals("Callback", StringComparison.OrdinalIgnoreCase)
+                    || (c.Outcome ?? "").Equals("Callback", StringComparison.OrdinalIgnoreCase)
+                    || (c.ExternalId ?? "").StartsWith("sarvam-callback:", StringComparison.OrdinalIgnoreCase)
+                    || CallLogDetails.IsGenericSummary(c.Summary)))
+            : null;
+        callerName = await ResolveSpokenNameAsync(
+            callerName,
+            callerPhone,
+            $"{reason} {callLog?.CallerName} {callLog?.Summary} {callLog?.Transcript}",
+            callLog,
+            cancellationToken);
+        _inbound.Remember(callerPhone, callerName);
+        var note = string.IsNullOrWhiteSpace(reason) ? "Caller requested a callback." : reason.Trim();
+        if (callLog is null)
+        {
+            callLog = new CallLog
+            {
+                ExternalId = $"sarvam-callback:{(last10.Length >= 10 ? last10 : Guid.NewGuid().ToString("N")[..10])}",
+                CallerName = callerName,
+                CallerPhone = callerPhone,
+                Summary = note.StartsWith("Caller requested", StringComparison.OrdinalIgnoreCase) ? note : $"Caller requested a callback. {note}",
+                ActionTaken = "Callback requested",
+                Intent = "Callback",
+                Transcript = note,
+                Timestamp = DateTime.UtcNow,
+                Outcome = "Callback",
+                TransferType = "Callback"
+            };
+            _db.CallLogs.Add(callLog);
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        else
+        {
+            if (CallerIdentity.HasRealName(callerName))
+            {
+                callLog.CallerName = callerName;
+            }
+
+            MarkCallbackRequested(callLog, note);
+        }
+
+        var callback = await EnsureImportedCallbackAsync(callLog, note, cancellationToken);
+        if (CallerIdentity.HasRealName(callerName))
+        {
+            callback.CallerName = callerName;
+        }
+        await _db.SaveChangesAsync(cancellationToken);
+        await _hub.Clients.All.SendAsync("CallSummaryAdded", CallLogDetails.ToDto(callLog, null, callback), cancellationToken);
+        return new SarvamCallbackResult(
+            true,
+            CallLogDetails.DisplayName(callLog.CallerName),
+            CallLogDetails.DisplayPhone(callLog.CallerPhone),
+            "Callback queued. Say: I have noted your callback request. Someone from the clinic will call you back. Then ask if they need anything else.");
     }
 
     public async Task<SarvamCallImportResult> ImportCallAsync(
@@ -313,37 +493,48 @@ public class SarvamManagedService : ISarvamManagedService
         }
 
         var externalId = $"sarvam:{attemptId}";
-        var callerPhone = CallLogDetails.DisplayPhone(NormalizePhone(request.CallerPhone));
+        var callerPhone = CallerIdentity.ResolvePhone(request.CallerPhone);
         var callerName = string.IsNullOrWhiteSpace(request.CallerName) || request.CallerName.Contains("identifier", StringComparison.OrdinalIgnoreCase)
             ? "Unknown"
             : request.CallerName.Trim();
         var transcript = string.Join(" | ", request.Transcript
             .Where(t => !string.IsNullOrWhiteSpace(t.Text))
             .Select(t => $"{MapRole(t.Role)}: {t.Text.Trim()}"));
-        if (string.IsNullOrWhiteSpace(callerPhone))
+        if (CallerIdentity.IsMissingPhone(request.CallerPhone))
         {
-            var cached = CallLogDetails.DisplayPhone(NormalizePhone(_inbound.RecentPhone()));
-            callerPhone = string.IsNullOrWhiteSpace(cached) ? CallLogDetails.ExtractPhone(transcript) : cached;
-        }
-
-        _inbound.Remember(callerPhone, callerName);
-
-        if (callerName == "Unknown")
-        {
-            var guessed = CallLogDetails.ExtractCallerName(transcript);
-            if (!string.IsNullOrWhiteSpace(guessed))
-            {
-                callerName = guessed;
-            }
+            var cached = CallerIdentity.ResolvePhone(CallLogDetails.ExtractPhone(transcript));
+            callerPhone = cached;
         }
 
         var summary = string.IsNullOrWhiteSpace(request.Summary)
             ? (string.IsNullOrWhiteSpace(transcript) ? "Sarvam Voicebot inbound call" : Truncate(transcript, 280))
             : Truncate(request.Summary.Trim(), 2000);
-        var existing = await FindExistingCallAsync(externalId, callerPhone, cancellationToken);
+        var existing = await FindExistingCallAsync(externalId, callerPhone, callerName, cancellationToken);
+        callerName = await ResolveSpokenNameAsync(
+            callerName,
+            callerPhone,
+            $"{request.Summary} {transcript} {request.Intent}",
+            existing,
+            cancellationToken);
+        _inbound.Remember(callerPhone, callerName);
         if (existing is not null)
         {
-            MergeCall(existing, callerName, callerPhone, summary, transcript, request.Status, request.FailureReason, request.DurationSeconds);
+            if (CallerIdentity.HasRealName(callerName)
+                && !CallerIdentity.HasRealName(existing.CallerName))
+            {
+                existing.CallerName = callerName;
+            }
+
+            MergeCall(
+                existing,
+                callerName,
+                callerPhone,
+                summary,
+                transcript,
+                request.Status,
+                request.FailureReason,
+                request.DurationSeconds,
+                request.StartedAt is null ? null : ResolveCallTimestamp(request.StartedAt));
             var existingRelated = await FindRelatedAppointmentAsync(existing, cancellationToken);
             if (existingRelated is not null)
             {
@@ -351,19 +542,38 @@ public class SarvamManagedService : ISarvamManagedService
             }
 
             await _ai.EnsureEnglishAsync(existing, cancellationToken);
+            CallCallback? mergedCallback = null;
+            if (CallLogDetails.IsCallbackRequested(existing, existingRelated, null))
+            {
+                MarkCallbackRequested(existing, existing.Summary);
+                mergedCallback = await EnsureImportedCallbackAsync(existing, existing.Summary, cancellationToken);
+            }
+
             await _db.SaveChangesAsync(cancellationToken);
-            await _hub.Clients.All.SendAsync("CallSummaryAdded", CallLogDetails.ToDto(existing, existingRelated), cancellationToken);
+            await _hub.Clients.All.SendAsync("CallSummaryAdded", CallLogDetails.ToDto(existing, existingRelated, mergedCallback), cancellationToken);
             return new SarvamCallImportResult(existing.Id, true, true, null);
         }
         var intent = string.IsNullOrWhiteSpace(request.Intent)
             ? GuessIntent($"{request.Status} {request.FailureReason} {summary} {transcript}")
             : request.Intent.Trim();
         var classifyText = $"{request.Status} {request.FailureReason} {summary} {transcript} {intent}";
-        var patient = string.IsNullOrWhiteSpace(callerPhone) && callerName == "Unknown"
-            ? null
-            : await FindOrCreatePatientAsync(callerName, callerPhone, cancellationToken);
+        Patient? patient = null;
+        if (CallerIdentity.HasRealName(callerName))
+        {
+            patient = await FindOrCreatePatientAsync(callerName, callerPhone, cancellationToken);
+        }
+        else
+        {
+            var onPhone = await PatientsOnPhoneAsync(callerPhone, cancellationToken);
+            var named = onPhone.Where(p => CallerIdentity.HasRealName(p.Name)).ToList();
+            if (named.Count == 1)
+            {
+                patient = named[0];
+                callerName = named[0].Name;
+            }
+        }
 
-        var timestamp = request.StartedAt?.ToUniversalTime() ?? DateTime.UtcNow;
+        var timestamp = ResolveCallTimestamp(request.StartedAt);
         var durationSeconds = NormalizeDurationSeconds(request.DurationSeconds);
         var duration = durationSeconds is > 0
             ? $" ({Math.Round(durationSeconds.Value)}s)"
@@ -399,12 +609,14 @@ public class SarvamManagedService : ISarvamManagedService
 
         var related = await FindRelatedAppointmentAsync(callLog, cancellationToken);
         CallCallback? callback = null;
-        if (related is not null)
+        var wantsCallback = CallLogDetails.WantsCallback(classifyText)
+            || intent.Equals("Callback", StringComparison.OrdinalIgnoreCase);
+        if (related is not null && !wantsCallback)
         {
             ApplyBookingToCall(callLog, related);
             await _db.SaveChangesAsync(cancellationToken);
         }
-        else if (forwarded)
+        else if (forwarded && !wantsCallback)
         {
             callLog.Intent = "Human";
             if (unanswered)
@@ -426,14 +638,12 @@ public class SarvamManagedService : ISarvamManagedService
                 new { callerName = callLog.CallerName, reason = callLog.ActionTaken },
                 cancellationToken);
         }
-        else if (CallLogDetails.IsCallbackRequested(callLog, null, null))
+        if (callback is null && wantsCallback)
         {
-            callLog.Intent = "Callback";
-            callLog.Outcome = "Callback";
-            callLog.ActionTaken = "Callback requested";
-            callback = await QueueImportedCallbackAsync(
+            MarkCallbackRequested(callLog, "Caller requested a callback.");
+            callback = await EnsureImportedCallbackAsync(
                 callLog,
-                "AI did not resolve the call; caller asked for a callback",
+                "Caller requested a callback",
                 cancellationToken);
         }
 
@@ -471,7 +681,7 @@ public class SarvamManagedService : ISarvamManagedService
     private async Task UpsertBookingCallLogAsync(Patient patient, AppointmentDto booked, CancellationToken cancellationToken)
     {
         var phone = CallLogDetails.DisplayPhone(NormalizePhone(patient.Contact));
-        var existing = await FindExistingCallAsync($"sarvam-book:{booked.Id}", phone, cancellationToken);
+        var existing = await FindExistingCallAsync($"sarvam-book:{booked.Id}", phone, patient.Name, cancellationToken);
         var callLog = existing ?? new CallLog
         {
             ExternalId = $"sarvam-book:{booked.Id}",
@@ -479,8 +689,9 @@ public class SarvamManagedService : ISarvamManagedService
             Intent = "Appointment",
             Outcome = "Contained"
         };
+        await _ai.EnsureEnglishAsync(patient, cancellationToken);
         callLog.CallerName = patient.Name;
-        callLog.CallerPhone = phone;
+        callLog.CallerPhone = CallerIdentity.IsMissingPhone(phone) ? CallerIdentity.WebTestPhone : phone;
         callLog.PatientId = patient.Id;
         callLog.Summary = $"{patient.Name} booked with {booked.DoctorName} for {booked.ScheduledAt:ddd d MMM, h:mm tt} IST.";
         callLog.ActionTaken = $"Booked with {booked.DoctorName} at {booked.ScheduledAt:h:mm tt} IST";
@@ -491,13 +702,18 @@ public class SarvamManagedService : ISarvamManagedService
         }
 
         await _ai.EnsureEnglishAsync(callLog, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
         var appointment = await _db.Appointments.Include(a => a.Doctor).Include(a => a.Patient)
             .FirstOrDefaultAsync(a => a.Id == booked.Id, cancellationToken);
+        if (appointment is not null)
+        {
+            await _ai.EnsureEnglishAsync(appointment, cancellationToken);
+        }
+
+        await _db.SaveChangesAsync(cancellationToken);
         await _hub.Clients.All.SendAsync("CallSummaryAdded", CallLogDetails.ToDto(callLog, appointment), cancellationToken);
     }
 
-    private async Task<CallLog?> FindExistingCallAsync(string externalId, string phone, CancellationToken cancellationToken)
+    private async Task<CallLog?> FindExistingCallAsync(string externalId, string phone, string? name, CancellationToken cancellationToken)
     {
         var byId = await _db.CallLogs.FirstOrDefaultAsync(c => c.ExternalId == externalId, cancellationToken);
         if (byId is not null)
@@ -511,16 +727,45 @@ public class SarvamManagedService : ISarvamManagedService
             return null;
         }
 
-        var since = DateTime.UtcNow.AddHours(-6);
+        var since = DateTime.UtcNow.AddMinutes(-20);
         var matches = await _db.CallLogs
             .Where(c => c.Timestamp >= since)
             .OrderByDescending(c => c.Timestamp)
             .ToListAsync(cancellationToken);
-        return matches.FirstOrDefault(c => CallLogDetails.Last10(c.CallerPhone) == last10);
+        var samePhone = matches.Where(c => CallLogDetails.Last10(c.CallerPhone) == last10).ToList();
+        if (samePhone.Count == 0)
+        {
+            return null;
+        }
+
+        if (CallerIdentity.HasRealName(name))
+        {
+            samePhone = samePhone
+                .Where(c => !CallerIdentity.HasRealName(c.CallerName) || CallerIdentity.NamesMatch(c.CallerName, name))
+                .ToList();
+        }
+
+        if (externalId.StartsWith("sarvam-book:", StringComparison.OrdinalIgnoreCase))
+        {
+            return samePhone.FirstOrDefault(c =>
+                (c.ExternalId ?? "").StartsWith("sarvam:", StringComparison.OrdinalIgnoreCase)
+                || (c.ExternalId ?? "").StartsWith("hook:", StringComparison.OrdinalIgnoreCase));
+        }
+
+        return samePhone.FirstOrDefault(c =>
+            (c.ExternalId ?? "").StartsWith("sarvam-book:", StringComparison.OrdinalIgnoreCase)
+            || (c.ExternalId ?? "").StartsWith("sarvam-callback:", StringComparison.OrdinalIgnoreCase)
+            || (c.Intent ?? "").Equals("Callback", StringComparison.OrdinalIgnoreCase)
+            || (c.Outcome ?? "").Equals("Callback", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static void MergeCall(CallLog existing, string callerName, string callerPhone, string summary, string transcript, string status, string? failureReason, double? durationSeconds)
+    private static void MergeCall(CallLog existing, string callerName, string callerPhone, string summary, string transcript, string status, string? failureReason, double? durationSeconds, DateTime? startedAt)
     {
+        if (startedAt is DateTime when && when != default)
+        {
+            existing.Timestamp = when;
+        }
+
         if (existing.CallerName is "Unknown" or "Unknown caller" && callerName is not "Unknown")
         {
             existing.CallerName = callerName;
@@ -552,7 +797,14 @@ public class SarvamManagedService : ISarvamManagedService
             existing.DurationSeconds = seconds.Value;
         }
 
-        if (existing.ActionTaken.StartsWith("Sarvam Voicebot", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(status))
+        if (CallLogDetails.LooksBooked(existing))
+        {
+            return;
+        }
+
+        if (existing.ActionTaken.StartsWith("Sarvam Voicebot", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(status)
+            && !status.Equals("unknown", StringComparison.OrdinalIgnoreCase)
+            && !status.Equals("uncertain", StringComparison.OrdinalIgnoreCase))
         {
             var suffix = existing.DurationSeconds > 0 ? $" ({Math.Round(existing.DurationSeconds)}s)" : "";
             existing.ActionTaken = $"Sarvam Voicebot {status}{suffix}";
@@ -618,7 +870,7 @@ public class SarvamManagedService : ISarvamManagedService
         var slots = new List<AvailableSlotDto>();
         foreach (var doctor in doctors)
         {
-            foreach (var schedule in doctor.Schedules.Where(s => s.DayOfWeek == date.DayOfWeek))
+            foreach (var schedule in SchedulesOrDefault(doctor).Where(s => s.DayOfWeek == date.DayOfWeek))
             {
                 var cursor = date.ToDateTime(TimeOnly.FromTimeSpan(schedule.StartTime));
                 var end = date.ToDateTime(TimeOnly.FromTimeSpan(schedule.EndTime));
@@ -647,56 +899,277 @@ public class SarvamManagedService : ISarvamManagedService
 
     private async Task<List<Doctor>> GetBookableDoctorsAsync(CancellationToken cancellationToken)
     {
-        var active = await _db.Doctors
+        return await _db.Doctors
             .Include(d => d.Schedules)
             .Where(d => d.IsActive)
-            .OrderBy(d => d.Id)
+            .OrderBy(d => d.Name)
             .ToListAsync(cancellationToken);
-        var gp = active
-            .Where(d => DoctorSpecialties.Matches(d.Specialization, DoctorSpecialties.GeneralPhysician))
-            .ToList();
-        var chosen = gp.Count > 0 ? gp.Take(1).ToList() : active.Take(1).ToList();
-        if (chosen.Count == 1 && chosen[0].Schedules.Count == 0)
-        {
-            chosen[0].Schedules = Enum.GetValues<DayOfWeek>()
-                .Where(d => d is not DayOfWeek.Sunday)
-                .Select(d => new DoctorSchedule
-                {
-                    DoctorId = chosen[0].Id,
-                    DayOfWeek = d,
-                    StartTime = new TimeSpan(9, 0, 0),
-                    EndTime = new TimeSpan(18, 0, 0)
-                })
-                .ToList();
-            await _db.SaveChangesAsync(cancellationToken);
-        }
-
-        return chosen;
     }
 
-    private static AvailabilityResult SoleDoctorAvailability(Doctor doctor, IReadOnlyList<AvailableSlotDto> allSlots, string? preferredTime)
+    private static List<DoctorSchedule> SchedulesOrDefault(Doctor doctor)
     {
-        var slots = allSlots.Where(s => s.DoctorId == doctor.Id).ToList();
-        if (TryParsePreferredTime(preferredTime, out var timeOfDay))
+        if (doctor.Schedules.Count > 0)
+        {
+            return doctor.Schedules.ToList();
+        }
+
+        return Enum.GetValues<DayOfWeek>()
+            .Where(d => d is not DayOfWeek.Sunday)
+            .Select(d => new DoctorSchedule
+            {
+                DoctorId = doctor.Id,
+                DayOfWeek = d,
+                StartTime = new TimeSpan(9, 0, 0),
+                EndTime = new TimeSpan(18, 0, 0)
+            })
+            .ToList();
+    }
+
+    private async Task<AvailabilityResult> SoleDoctorOrNextAsync(
+        Doctor doctor,
+        string? timeHint,
+        DateOnly date,
+        int? durationMinutes,
+        CancellationToken cancellationToken)
+    {
+        var allSlots = await LoadSlotsAsync(date, durationMinutes, cancellationToken);
+        var sole = SoleDoctorAvailability(doctor, allSlots, timeHint, date);
+        if (sole.Slots.Count > 0)
+        {
+            return sole;
+        }
+
+        for (var offset = 1; offset <= 7; offset++)
+        {
+            var nextDate = date.AddDays(offset);
+            var nextSlots = await LoadSlotsAsync(nextDate, durationMinutes, cancellationToken);
+            var next = SoleDoctorAvailability(doctor, nextSlots, timeHint, nextDate);
+            if (next.Slots.Count == 0)
+            {
+                continue;
+            }
+
+            var window = ClinicDateParser.ParseTimeWindow(timeHint);
+            var spoken = window.Restricts
+                ? $"{doctor.Name} has no {window.Label} openings on {SpeakDate(date)}. Next {window.Label} is {SpeakDate(nextDate)} at {SpeakSlotTimes(next.Slots, 5)}. Ask which time they want. Stay on the line. Never hang up."
+                : $"{doctor.Name} has no slots on {SpeakDate(date)}. {AskWindowsSpoken(doctor.Name, nextDate, next.Slots)}";
+            return next with { Message = spoken, SpokenPrompt = spoken };
+        }
+
+        var none = $"{doctor.Name} has no openings in the next week. Offer a callback. Stay on the line. Never hang up.";
+        return sole with { Message = none, SpokenPrompt = none };
+    }
+
+    private static AvailabilityResult AskWhichDoctor(
+        IReadOnlyList<Doctor> doctors,
+        DateOnly date,
+        IReadOnlyList<AvailableSlotDto> allSlots,
+        string? timeHint)
+    {
+        var window = ClinicDateParser.ParseTimeWindow(timeHint);
+        var slots = allSlots.ToList();
+        if (window.Restricts)
         {
             slots = slots
-                .Where(s => DateTime.TryParse(s.LocalStart, CultureInfo.InvariantCulture, DateTimeStyles.None, out var slotTime)
-                    && Math.Abs((slotTime.TimeOfDay - timeOfDay).TotalMinutes) <= 30)
+                .Where(s => ClinicDateParser.TryParseSlotLocal(s.LocalStart, out var slotTime) && window.Matches(slotTime.TimeOfDay))
                 .ToList();
+        }
+
+        var summaries = doctors
+            .Select(d => new AvailableDoctorDto(d.Id, d.Name, d.Specialization, allSlots.Count(s => s.DoctorId == d.Id)))
+            .ToList();
+        var names = string.Join(", ", doctors.Select(d => $"{d.Name} ({d.Specialization})"));
+        string spoken;
+        if (window.Restricts && slots.Count > 0)
+        {
+            var bits = doctors.Select(doctor =>
+            {
+                var times = SpeakSlotTimes(slots.Where(s => s.DoctorId == doctor.Id), 3);
+                return slots.Any(s => s.DoctorId == doctor.Id)
+                    ? $"{doctor.Name} {window.Label} {times}"
+                    : $"{doctor.Name}, no {window.Label} slots";
+            });
+            spoken = $"Clinic doctors {SpeakDate(date)} {window.Label}: {string.Join(". ", bits)}. Ask which doctor and which time. Stay on the line. Never hang up.";
+            return new AvailabilityResult(true, spoken, spoken, "", true, summaries, slots);
+        }
+
+        spoken = window.Restricts
+            ? AskWindowsSpoken($"Clinic doctors {names}", date, allSlots)
+                .Replace("Do not read specific times yet.", $"No {window.Label} openings. Ask another window. Never say no slots are available.")
+            : $"{AskWindowsSpoken($"Clinic doctors {names}", date, allSlots)} Ask which doctor they want. Do not invent names.";
+        return new AvailabilityResult(
+            summaries.Any(d => d.SlotCount > 0),
+            spoken,
+            spoken,
+            "",
+            true,
+            summaries,
+            allSlots.ToList());
+    }
+
+    private static AvailabilityResult OfferAnyoneAvailability(
+        IReadOnlyList<Doctor> doctors,
+        IReadOnlyList<AvailableSlotDto> allSlots,
+        string? preferredTime,
+        DateOnly date)
+    {
+        var window = ClinicDateParser.ParseTimeWindow(preferredTime);
+        var slots = allSlots.ToList();
+        if (window.Restricts)
+        {
+            slots = slots
+                .Where(s => ClinicDateParser.TryParseSlotLocal(s.LocalStart, out var slotTime) && window.Matches(slotTime.TimeOfDay))
+                .ToList();
+        }
+
+        var summaries = SummarizeDoctors(slots);
+        if (!window.Restricts)
+        {
+            var ask = AskWindowsSpoken("A clinic doctor", date, slots);
+            return new AvailabilityResult(slots.Count > 0, ask, ask, "", summaries.Count > 1, summaries, slots);
+        }
+
+        var offer = slots.OrderBy(s => s.LocalStart).Take(8).ToList();
+        var spoken = offer.Count == 0
+            ? AskWindowsSpoken("A clinic doctor", date, allSlots).Replace("Do not read specific times yet.", $"No {window.Label} openings. Ask another window. Do not say no slots are available if morning, afternoon, or evening is open.")
+            : $"These doctors have {window.Label} times {SpeakDate(date)}: {string.Join(". ", summaries.Select(d => $"{d.DoctorName} at {SpeakSlotTimes(offer.Where(s => s.DoctorId == d.DoctorId), 3)}"))}. Ask who and which time. Stay on the line. Never hang up.";
+        return new AvailabilityResult(offer.Count > 0 || allSlots.Count > 0, spoken, spoken, "", summaries.Count > 1, summaries, offer.Count > 0 ? offer : allSlots.ToList());
+    }
+
+    private static AvailabilityResult SoleDoctorAvailability(Doctor doctor, IReadOnlyList<AvailableSlotDto> allSlots, string? preferredTime, DateOnly date)
+    {
+        var daySlots = allSlots.Where(s => s.DoctorId == doctor.Id).ToList();
+        var window = ClinicDateParser.ParseTimeWindow(preferredTime);
+        var morning = SlotsInRange(daySlots, TimeSpan.FromHours(9), TimeSpan.FromHours(12));
+        var afternoon = SlotsInRange(daySlots, TimeSpan.FromHours(12), TimeSpan.FromHours(16));
+        var evening = SlotsInRange(daySlots, TimeSpan.FromHours(16), null);
+        var slots = daySlots;
+        if (window.Restricts)
+        {
+            slots = daySlots.Where(slot =>
+                ClinicDateParser.TryParseSlotLocal(slot.LocalStart, out var slotTime)
+                && window.Matches(slotTime.TimeOfDay)).ToList();
         }
 
         var name = doctor.Name;
-        var spoken = slots.Count > 0
-            ? $"{name} is the only doctor, General Physician. Do not ask which doctor. Offer these times and book with {name}."
-            : $"{name} has no free slots that day. Offer another day. Do not mention any other doctor.";
+        var spoken = BuildSoleSpoken(name, date, window, slots, morning, afternoon, evening);
+        var offer = window.Restricts && slots.Count > 0 ? slots.Take(8).ToList() : daySlots;
         return new AvailabilityResult(
-            slots.Count > 0,
+            daySlots.Count > 0,
             spoken,
             spoken,
             doctor.Specialization,
             false,
-            [new AvailableDoctorDto(doctor.Id, doctor.Name, doctor.Specialization, slots.Count)],
-            slots.Take(8).ToList());
+            [new AvailableDoctorDto(doctor.Id, doctor.Name, doctor.Specialization, daySlots.Count)],
+            offer);
+    }
+
+    private static string BuildSoleSpoken(
+        string name,
+        DateOnly date,
+        ClinicDateParser.TimeWindow window,
+        IReadOnlyList<AvailableSlotDto> slots,
+        IReadOnlyList<AvailableSlotDto> morning,
+        IReadOnlyList<AvailableSlotDto> afternoon,
+        IReadOnlyList<AvailableSlotDto> evening)
+    {
+        var when = SpeakDate(date);
+        if (window.Restricts)
+        {
+            if (slots.Count > 0)
+            {
+                return $"{name} can see you {when} {window.Label} at {SpeakSlotTimes(slots, 5)}. Ask which time they want, then book it. Stay on the line. Never hang up.";
+            }
+
+            return AskWindowsSpoken(name, date, morning.Concat(afternoon).Concat(evening).ToList())
+                .Replace("Do not read specific times yet.", $"No {window.Label} openings. Ask another of the open windows. Never say no slots are available.");
+        }
+
+        return AskWindowsSpoken(name, date, morning.Concat(afternoon).Concat(evening).ToList());
+    }
+
+    private static string AskWindowsSpoken(string who, DateOnly date, IReadOnlyList<AvailableSlotDto> slots)
+    {
+        var morning = SlotsInRange(slots, TimeSpan.FromHours(9), TimeSpan.FromHours(12));
+        var afternoon = SlotsInRange(slots, TimeSpan.FromHours(12), TimeSpan.FromHours(16));
+        var evening = SlotsInRange(slots, TimeSpan.FromHours(16), null);
+        var open = new List<string>();
+        if (morning.Count > 0) open.Add("morning");
+        if (afternoon.Count > 0) open.Add("afternoon");
+        if (evening.Count > 0) open.Add("evening");
+        if (open.Count == 0)
+        {
+            return $"{who} has no openings on {SpeakDate(date)}. Offer another day. Stay on the line. Never hang up.";
+        }
+
+        var list = open.Count == 1
+            ? open[0]
+            : open.Count == 2
+                ? $"{open[0]} or {open[1]}"
+                : "morning, afternoon, and evening";
+        var verb = who.StartsWith("Clinic doctors", StringComparison.OrdinalIgnoreCase) ? "are" : "is";
+        return $"{who} {verb} available {SpeakDate(date)}. {char.ToUpperInvariant(list[0]) + list[1..]} slots are available. Ask only: morning, afternoon, or evening? Do not read specific times yet. Never say no slots available when evening, afternoon, or morning is open. Stay on the line. Never hang up.";
+    }
+
+    private static string ResolvePartOfDayHint(string? preferredTime, string? problem)
+    {
+        var fromPreferred = ClinicDateParser.CombineTimeHints(preferredTime);
+        if (ClinicDateParser.ParseTimeWindow(fromPreferred).Restricts)
+        {
+            return fromPreferred;
+        }
+
+        var fromProblem = ClinicDateParser.ParseTimeWindow(problem);
+        return fromProblem.Label is "morning" or "afternoon" or "evening"
+            ? fromProblem.Label
+            : fromPreferred;
+    }
+
+    private static List<AvailableSlotDto> SlotsInRange(IEnumerable<AvailableSlotDto> slots, TimeSpan from, TimeSpan? to) =>
+        slots.Where(slot =>
+            ClinicDateParser.TryParseSlotLocal(slot.LocalStart, out var time)
+            && time.TimeOfDay >= from
+            && (to is not TimeSpan end || time.TimeOfDay < end)).ToList();
+
+    private static string SpeakDate(DateOnly date)
+    {
+        var today = DateOnly.FromDateTime(IndiaTime.Now);
+        if (date == today)
+        {
+            return "today";
+        }
+
+        if (date == today.AddDays(1))
+        {
+            return "tomorrow";
+        }
+
+        return date.ToString("dddd d MMMM", CultureInfo.GetCultureInfo("en-IN"));
+    }
+
+    private static string SpeakSlotTimes(IEnumerable<AvailableSlotDto> slots, int max = 3)
+    {
+        var times = slots
+            .Take(max)
+            .Select(slot =>
+            {
+                if (ClinicDateParser.TryParseSlotLocal(slot.LocalStart, out var time))
+                {
+                    return time.ToString("h:mm tt", CultureInfo.GetCultureInfo("en-IN"));
+                }
+
+                return string.IsNullOrWhiteSpace(slot.Display) ? slot.LocalStart : slot.Display;
+            })
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToList();
+
+        return times.Count switch
+        {
+            0 => "no listed times",
+            1 => times[0],
+            2 => $"{times[0]} or {times[1]}",
+            _ => $"{times[0]}, {times[1]}, or {times[2]}"
+        };
     }
 
     private static AvailabilityResult DoctorChoiceResult(
@@ -771,26 +1244,6 @@ public class SarvamManagedService : ISarvamManagedService
         string.IsNullOrWhiteSpace(specialty) ? "doctors"
         : specialty.Equals("Dentist", StringComparison.OrdinalIgnoreCase) ? "dentists"
         : specialty.ToLowerInvariant() + "s";
-
-    private static bool TryParsePreferredTime(string? value, out TimeSpan timeOfDay)
-    {
-        timeOfDay = default;
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        var text = value.Trim();
-        string[] formats = ["h:mm tt", "h tt", "htt", "HH:mm", "H:mm", "h:mmtt", "hh:mm tt"];
-        if (DateTime.TryParseExact(text, formats, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var parsed)
-            || DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out parsed))
-        {
-            timeOfDay = parsed.TimeOfDay;
-            return true;
-        }
-
-        return false;
-    }
 
     private static string? NormalizeDoctorChoice(string? doctorName)
     {
@@ -896,24 +1349,143 @@ public class SarvamManagedService : ISarvamManagedService
         return DoctorSpecialties.GeneralPhysician;
     }
 
+    private static string BookingSuccessMessage(string patientName, string doctorName, DateTime when) =>
+        $"Okay, booking will be created for {patientName}. Your booking has been successfully created. {when:h:mm tt} IST on {when:dddd d MMMM} with {doctorName}.";
+
+    private async Task<string> ResolveSpokenNameAsync(
+        string? callerName,
+        string? callerPhone,
+        string? spokenText,
+        CallLog? existing,
+        CancellationToken cancellationToken)
+    {
+        var onPhone = await PatientsOnPhoneAsync(callerPhone, cancellationToken);
+        foreach (var known in onPhone)
+        {
+            await _ai.EnsureEnglishAsync(known, cancellationToken);
+        }
+
+        var mentioned = onPhone
+            .Where(p => CallerIdentity.HasRealName(p.Name) && CallerIdentity.TextMentionsName(spokenText, p.Name))
+            .Select(p => p.Name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (mentioned.Count == 1)
+        {
+            return mentioned[0];
+        }
+
+        if (CallerIdentity.HasRealName(callerName))
+        {
+            var matched = onPhone.FirstOrDefault(p => CallerIdentity.NamesMatch(p.Name, callerName));
+            return matched?.Name.Trim() ?? callerName!.Trim();
+        }
+
+        var guessed = CallLogDetails.ExtractCallerName(spokenText ?? "");
+        if (CallerIdentity.HasRealName(guessed))
+        {
+            var matched = onPhone.FirstOrDefault(p => CallerIdentity.NamesMatch(p.Name, guessed));
+            return matched?.Name.Trim() ?? guessed.Trim();
+        }
+
+        var cached = _inbound.RecentNameFor(callerPhone);
+        if (CallerIdentity.HasRealName(cached))
+        {
+            return cached!.Trim();
+        }
+
+        if (existing is not null && CallerIdentity.HasRealName(existing.CallerName)
+            && CallerIdentity.PhonesMatch(existing.CallerPhone, callerPhone))
+        {
+            return existing.CallerName.Trim();
+        }
+
+        return "Unknown";
+    }
+
+    private async Task<(Patient? Patient, string Ask)> ResolveBookingPatientAsync(
+        string callerName,
+        string callerPhone,
+        CancellationToken cancellationToken)
+    {
+        var ask = "Can you please confirm your full name and number?";
+        if (!CallerIdentity.HasRealName(callerName))
+        {
+            return (null, ask);
+        }
+
+        var last10 = CallerIdentity.Last10(callerPhone);
+        var patients = await _db.Patients.ToListAsync(cancellationToken);
+        foreach (var row in patients)
+        {
+            await _ai.EnsureEnglishAsync(row, cancellationToken);
+        }
+
+        var named = patients
+            .Where(p => CallerIdentity.NamesMatch(p.Name, callerName))
+            .OrderBy(p => p.Id)
+            .ToList();
+        var matched = named.FirstOrDefault(p => !CallerIdentity.IsMissingPhone(p.Contact) && CallerIdentity.Last10(p.Contact) == last10);
+        if (matched is not null)
+        {
+            return (matched, "");
+        }
+
+        if (named.Count > 0)
+        {
+            return (null, $"I found {named[0].Name} in our records, but this phone number does not match. {ask}");
+        }
+
+        var parts = CallerIdentity.FoldName(callerName).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            return (null, ask);
+        }
+
+        return (await FindOrCreatePatientAsync(callerName, callerPhone, cancellationToken), "");
+    }
+
     private async Task<Patient> FindOrCreatePatientAsync(string callerName, string callerPhone, CancellationToken cancellationToken)
     {
-        var name = string.IsNullOrWhiteSpace(callerName) ? "Unknown Caller" : callerName.Trim();
-        var phone = NormalizePhone(callerPhone);
-        var last10 = Last10(phone);
+        var phone = CallerIdentity.ResolvePhone(callerPhone);
+        callerName = await _ai.TranslateToEnglishAsync(callerName, cancellationToken);
+        var onPhone = await PatientsOnPhoneAsync(phone, cancellationToken);
+        foreach (var known in onPhone)
+        {
+            await _ai.EnsureEnglishAsync(known, cancellationToken);
+            if (CallerIdentity.IsMissingPhone(known.Contact))
+            {
+                known.Contact = phone;
+            }
+        }
+        if (!CallerIdentity.HasRealName(callerName))
+        {
+            callerName = "Unknown Caller";
+        }
 
-        var patients = await _db.Patients.ToListAsync(cancellationToken);
-        var existing = patients.FirstOrDefault(p =>
-            (!string.IsNullOrEmpty(last10) && Last10(p.Contact) == last10)
-            || (!string.IsNullOrWhiteSpace(name) && name != "Unknown Caller" && p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)));
+        var name = callerName.Trim();
+        var existing = onPhone.FirstOrDefault(p => CallerIdentity.NamesMatch(p.Name, name));
         if (existing is not null)
         {
-            if (string.IsNullOrWhiteSpace(existing.Contact) && !string.IsNullOrWhiteSpace(phone))
+            existing.Contact = phone;
+            if (CallerIdentity.HasRealName(name)
+                && (existing.Name.StartsWith("Unknown", StringComparison.OrdinalIgnoreCase)
+                    || (name.Length > existing.Name.Length && CallerIdentity.NamesMatch(existing.Name, name))))
             {
-                existing.Contact = phone;
-                await _db.SaveChangesAsync(cancellationToken);
+                existing.Name = name;
             }
 
+            var stamp = $"Voice update {IndiaTime.Now:yyyy-MM-dd HH:mm} IST";
+            if (string.IsNullOrWhiteSpace(existing.Notes))
+            {
+                existing.Notes = stamp;
+            }
+            else if (!existing.Notes.Contains(stamp, StringComparison.Ordinal))
+            {
+                existing.Notes = $"{existing.Notes.Trim()}; {stamp}";
+            }
+
+            await _db.SaveChangesAsync(cancellationToken);
             return existing;
         }
 
@@ -921,13 +1493,48 @@ public class SarvamManagedService : ISarvamManagedService
         {
             Name = name,
             Contact = phone,
-            Notes = "Created from Sarvam Voicebot call"
+            Notes = onPhone.Count > 0
+                ? $"Created from Sarvam Voicebot on shared number {CallerIdentity.DisplayPhone(phone)}"
+                : "Created from Sarvam Voicebot call"
         };
         _db.Patients.Add(patient);
         await _db.SaveChangesAsync(cancellationToken);
         patient.Uhid = $"ANJ-{patient.Id:D6}";
         await _db.SaveChangesAsync(cancellationToken);
         return patient;
+    }
+
+    private async Task<List<Patient>> PatientsOnPhoneAsync(string? phone, CancellationToken cancellationToken)
+    {
+        var last10 = CallerIdentity.Last10(phone);
+        if (last10.Length < 10)
+        {
+            return [];
+        }
+
+        var patients = await _db.Patients.ToListAsync(cancellationToken);
+        return patients.Where(p => CallerIdentity.Last10(p.Contact) == last10).OrderBy(p => p.Id).ToList();
+    }
+
+    private static DateTime ResolveCallTimestamp(DateTime? startedAt)
+    {
+        if (startedAt is null || startedAt.Value == default)
+        {
+            return DateTime.UtcNow;
+        }
+
+        var value = startedAt.Value;
+        if (value.Kind == DateTimeKind.Utc)
+        {
+            return value;
+        }
+
+        if (value.Kind == DateTimeKind.Local)
+        {
+            return value.ToUniversalTime();
+        }
+
+        return IndiaTime.ToUtcFromIst(value);
     }
 
     private static string FormatLocal(DateTime value) =>
@@ -970,6 +1577,38 @@ public class SarvamManagedService : ISarvamManagedService
             ? "agent"
             : "caller";
 
+    private static void MarkCallbackRequested(CallLog callLog, string? note)
+    {
+        callLog.Intent = "Callback";
+        callLog.Outcome = "Callback";
+        callLog.TransferType = "Callback";
+        callLog.ActionTaken = "Callback requested";
+        if (CallLogDetails.IsGenericSummary(callLog.Summary))
+        {
+            callLog.Summary = string.IsNullOrWhiteSpace(note) || CallLogDetails.IsGenericSummary(note)
+                ? "Caller requested a callback."
+                : note.Trim();
+        }
+    }
+
+    private async Task<CallCallback> EnsureImportedCallbackAsync(
+        CallLog callLog,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var queued = await _db.CallCallbacks
+            .Where(c => c.Status == "Queued")
+            .OrderByDescending(c => c.CreatedAt)
+            .ToListAsync(cancellationToken);
+        var existing = CallLogDetails.FindCallback(callLog, queued);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        return await QueueImportedCallbackAsync(callLog, reason, cancellationToken);
+    }
+
     private async Task<CallCallback> QueueImportedCallbackAsync(
         CallLog callLog,
         string reason,
@@ -980,7 +1619,7 @@ public class SarvamManagedService : ISarvamManagedService
             CallerName = CallLogDetails.DisplayName(callLog.CallerName),
             CallerPhone = CallLogDetails.DisplayPhone(callLog.CallerPhone),
             Reason = reason,
-            Summary = callLog.Summary,
+            Summary = CallLogDetails.IsGenericSummary(callLog.Summary) ? "Caller requested a callback." : callLog.Summary,
             Status = "Queued",
             Priority = false,
             CreatedAt = DateTime.UtcNow

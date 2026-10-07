@@ -10,6 +10,7 @@ namespace AiVoicePortal.Api.Services;
 public interface IAppointmentService
 {
     Task<AppointmentDto> BookAsync(BookAppointmentRequest request, bool pushDashboard = true, CancellationToken cancellationToken = default);
+    Task<AppointmentDto> BookNewPatientAsync(BookNewPatientRequest request, CancellationToken cancellationToken = default);
     Task<List<AppointmentDto>> ListAsync(int? doctorId, int? patientId, CancellationToken cancellationToken = default);
     Task<AppointmentPageDto> ListPagedAsync(int? doctorId, int? patientId, int page, int pageSize, CancellationToken cancellationToken = default);
     Task<AppointmentDto> UpdateStatusAsync(int id, string status, CancellationToken cancellationToken = default);
@@ -25,6 +26,7 @@ public class AppointmentService : IAppointmentService
     private readonly IHubContext<DashboardHub> _hub;
     private readonly IClinicNotificationService _notifications;
     private readonly IConfiguration _config;
+    private readonly ISarvamAiService _ai;
     private readonly ILogger<AppointmentService> _logger;
 
     public AppointmentService(
@@ -33,6 +35,7 @@ public class AppointmentService : IAppointmentService
         IHubContext<DashboardHub> hub,
         IClinicNotificationService notifications,
         IConfiguration config,
+        ISarvamAiService ai,
         ILogger<AppointmentService> logger)
     {
         _db = db;
@@ -40,6 +43,7 @@ public class AppointmentService : IAppointmentService
         _hub = hub;
         _notifications = notifications;
         _config = config;
+        _ai = ai;
         _logger = logger;
     }
 
@@ -56,24 +60,14 @@ public class AppointmentService : IAppointmentService
             ? request.ScheduledAt.ToLocalTime()
             : request.ScheduledAt;
 
-        EnsureAvailability(doctor, scheduledLocal);
-
-        var overlap = await _db.Appointments.AnyAsync(a =>
-            a.DoctorId == doctor.Id
-            && a.Status != "Cancelled"
-            && a.ScheduledAt == scheduledLocal, cancellationToken);
-
-        if (overlap)
-        {
-            throw new InvalidOperationException("That slot is already booked for this doctor.");
-        }
+        await EnsureSlotFreeAsync(doctor.Id, scheduledLocal, null, cancellationToken);
 
         var appointment = new Appointment
         {
             PatientId = patient.Id,
             DoctorId = doctor.Id,
             ScheduledAt = scheduledLocal,
-            Status = "Scheduled",
+            Status = "Not Attended",
             Notes = request.Notes ?? string.Empty,
             CreatedAt = DateTime.UtcNow
         };
@@ -115,6 +109,57 @@ public class AppointmentService : IAppointmentService
         }
 
         return ToDto(appointment, patient, doctor);
+    }
+
+    public async Task<AppointmentDto> BookNewPatientAsync(BookNewPatientRequest request, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length < 2)
+        {
+            throw new InvalidOperationException("Enter the patient's full name.");
+        }
+
+        if (request.Age is < 1 or > 120)
+        {
+            throw new InvalidOperationException("Enter a valid age.");
+        }
+
+        var digits = new string((request.Contact ?? "").Where(char.IsDigit).ToArray());
+        if (digits.Length is < 10 or > 15)
+        {
+            throw new InvalidOperationException("Enter a valid mobile number.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Email) && (request.Email.Count(c => c == '@') != 1 || !request.Email.Contains('.')))
+        {
+            throw new InvalidOperationException("Enter a valid email address.");
+        }
+
+        if (!await _db.Doctors.AnyAsync(d => d.Id == request.DoctorId && d.IsActive, cancellationToken))
+        {
+            throw new InvalidOperationException("Doctor not found or inactive.");
+        }
+
+        var patient = new Patient
+        {
+            Name = request.Name.Trim(),
+            Age = request.Age,
+            Contact = (request.Contact ?? string.Empty).Trim(),
+            Email = request.Email?.Trim() ?? string.Empty,
+            Address = request.Address?.Trim() ?? string.Empty,
+            Notes = request.Notes?.Trim() ?? string.Empty
+        };
+        _db.Patients.Add(patient);
+        await _db.SaveChangesAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(patient.Uhid))
+        {
+            patient.Uhid = $"ANJ-{patient.Id:D6}";
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+
+        return await BookAsync(
+            new BookAppointmentRequest(patient.Id, request.DoctorId, request.ScheduledAt, request.AppointmentNotes ?? string.Empty),
+            pushDashboard: true,
+            cancellationToken);
     }
 
     public async Task<List<AppointmentDto>> ListAsync(int? doctorId, int? patientId, CancellationToken cancellationToken = default)
@@ -164,6 +209,20 @@ public class AppointmentService : IAppointmentService
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync(cancellationToken);
+        var translated = false;
+        foreach (var appointment in items)
+        {
+            translated |= await _ai.EnsureEnglishAsync(appointment, cancellationToken);
+            if (appointment.Patient is not null)
+            {
+                translated |= await _ai.EnsureEnglishAsync(appointment.Patient, cancellationToken);
+            }
+        }
+
+        if (translated)
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
 
         return new AppointmentPageDto(
             items.Select(a => ToDto(a, a.Patient, a.Doctor)).ToList(),
@@ -180,7 +239,12 @@ public class AppointmentService : IAppointmentService
             .FirstOrDefaultAsync(a => a.Id == id, cancellationToken)
             ?? throw new KeyNotFoundException("Appointment not found.");
 
-        appointment.Status = status;
+        if (!AppointmentStatuses.TryNormalize(status, out var normalized))
+        {
+            throw new InvalidOperationException("Status must be Not Attended, Completed, or Cancelled.");
+        }
+
+        appointment.Status = normalized;
         await _db.SaveChangesAsync(cancellationToken);
         var dto = ToDto(appointment, appointment.Patient, appointment.Doctor);
         await _hub.Clients.All.SendAsync("AppointmentChanged", dto, cancellationToken);
@@ -216,19 +280,13 @@ public class AppointmentService : IAppointmentService
         }
 
         var scheduledLocal = scheduledAt.Kind == DateTimeKind.Utc ? scheduledAt.ToLocalTime() : scheduledAt;
-        EnsureAvailability(appointment.Doctor, scheduledLocal);
-        var overlap = await _db.Appointments.AnyAsync(a =>
-            a.Id != appointment.Id
-            && a.DoctorId == appointment.DoctorId
-            && a.Status != "Cancelled"
-            && a.ScheduledAt == scheduledLocal, cancellationToken);
-        if (overlap)
-        {
-            throw new InvalidOperationException("That slot is already booked for this doctor.");
-        }
+        await EnsureSlotFreeAsync(appointment.DoctorId, scheduledLocal, appointment.Id, cancellationToken);
 
         appointment.ScheduledAt = scheduledLocal;
-        appointment.Status = "Scheduled";
+        if (appointment.Status is "Scheduled" or "Confirmed" or "Pending")
+        {
+            appointment.Status = "Not Attended";
+        }
         await _db.SaveChangesAsync(cancellationToken);
         var dto = ToDto(appointment, appointment.Patient, appointment.Doctor);
         await _hub.Clients.All.SendAsync("AppointmentChanged", dto, cancellationToken);
@@ -306,16 +364,6 @@ public class AppointmentService : IAppointmentService
         try
         {
             var patientName = PatientDisplayName(patient);
-            var (approveUrl, rejectUrl) = EmailDecisionUrls(appointment.Id);
-            var doctorBody = AppointmentMail.DoctorBookingBody(patientName, scheduledLocal, approveUrl, rejectUrl);
-            await _email.SendDoctorAsync(
-                doctor.Email,
-                "New Appointment Request",
-                doctorBody,
-                cancellationToken,
-                AppointmentMail.ToHtml(doctorBody, approveUrl, rejectUrl),
-                requireDelivery);
-
             var patientBody = AppointmentMail.PatientBookingBody(
                 patientName,
                 AppointmentMail.DisplayDoctor(doctor),
@@ -386,16 +434,20 @@ public class AppointmentService : IAppointmentService
     private string ClinicAddress() =>
         _config["Email:ClinicAddress"] ?? "Anuj Clinic, Andheri, Mumbai";
 
-    private static void EnsureAvailability(Doctor doctor, DateTime scheduledAt)
+    private async Task EnsureSlotFreeAsync(int doctorId, DateTime scheduledLocal, int? exceptAppointmentId, CancellationToken cancellationToken)
     {
-        var day = scheduledAt.DayOfWeek;
-        var time = scheduledAt.TimeOfDay;
-        var match = doctor.Schedules.FirstOrDefault(s =>
-            s.DayOfWeek == day && time >= s.StartTime && time < s.EndTime);
-
-        if (match is null)
+        var query = _db.Appointments.Where(a =>
+            a.DoctorId == doctorId
+            && a.Status != "Cancelled"
+            && a.ScheduledAt == scheduledLocal);
+        if (exceptAppointmentId.HasValue)
         {
-            throw new InvalidOperationException($"{doctor.Name} is not available at {scheduledAt:yyyy-MM-dd HH:mm}.");
+            query = query.Where(a => a.Id != exceptAppointmentId.Value);
+        }
+
+        if (await query.AnyAsync(cancellationToken))
+        {
+            throw new InvalidOperationException("That slot is already booked for this doctor. Choose another time.");
         }
     }
 

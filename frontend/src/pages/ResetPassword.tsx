@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
+import { isValidEmail } from "../lib/validate";
 
 export function ResetPasswordPage() {
   const [params] = useSearchParams();
@@ -14,6 +15,18 @@ export function ResetPasswordPage() {
     e.preventDefault();
     setError("");
     setMessage("");
+    if (!email.trim() || !isValidEmail(email)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+    if (!token.trim()) {
+      setError("This reset link is missing a token. Use the link from your email.");
+      return;
+    }
     try {
       const { data } = await api.post("/auth/reset-password", { email, token, newPassword: password });
       setMessage(data.message);

@@ -1,16 +1,23 @@
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
+import { isValidEmail } from "../lib/validate";
 
 export function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    setLoading(true);
+    setError("");
     setMessage("");
+    if (!email.trim() || !isValidEmail(email)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    setLoading(true);
     try {
       const { data } = await api.post("/auth/forgot-password", { email });
       setMessage(data.message);
@@ -26,6 +33,7 @@ export function ForgotPasswordPage() {
       <form onSubmit={submit} className="card w-full max-w-md space-y-4 p-8">
         <h1 className="font-display text-3xl">Reset password</h1>
         <p className="text-sm text-slate-500">We’ll email a reset link if the account exists. Without SMTP, the link is written to the API logs.</p>
+        {error && <div className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div>}
         {message && <div className="rounded-xl bg-teal-50 px-3 py-2 text-sm text-teal-800">{message}</div>}
         <div>
           <label htmlFor="email">Email</label>

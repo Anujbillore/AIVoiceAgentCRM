@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, type AuthUser } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import { isValidAge, isValidEmail, isValidName, isValidPhone } from "../lib/validate";
 
 export function RegisterPage() {
   const { acceptAuth } = useAuth();
@@ -18,6 +19,26 @@ export function RegisterPage() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError("");
+    if (!isValidName(fullName)) {
+      setError("Enter your full name.");
+      return;
+    }
+    if (!email.trim() || !isValidEmail(email)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+    if (!isValidAge(Number(age))) {
+      setError("Enter a valid age.");
+      return;
+    }
+    if (!isValidPhone(contact)) {
+      setError("Enter a valid mobile number.");
+      return;
+    }
     setLoading(true);
     try {
       const { data } = await api.post<AuthUser>("/auth/register", {

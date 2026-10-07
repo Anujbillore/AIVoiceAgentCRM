@@ -14,14 +14,12 @@ import { CalendarCheck, CircleCheck, Clock3, Phone, PhoneForwarded, PhoneIncomin
 import { Link } from "react-router-dom";
 import { api, TOKEN_KEY, type Appointment, type CallLog, type DashboardStats } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
-import { formatDay, formatTime } from "../lib/format";
+import { formatDay, formatStamp, formatTime } from "../lib/format";
 import { useAuth } from "../context/AuthContext";
+import { SortSelect } from "../components/Pagination";
+import { type SortDir, sortRecords } from "../lib/pager";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Tooltip, Legend);
-
-function formatStamp(value: string) {
-  return new Date(value).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-}
 
 function isoDate(value: Date) {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -44,15 +42,19 @@ export function DashboardPage() {
   const [toDate, setToDate] = useState(isoDate(new Date()));
   const [actionPage, setActionPage] = useState(1);
   const [upcomingPage, setUpcomingPage] = useState(1);
+  const [callSort, setCallSort] = useState<SortDir>("latest");
+  const [upcomingSort, setUpcomingSort] = useState<SortDir>("latest");
   const [callbackBusy, setCallbackBusy] = useState<number | null>(null);
-  const rangeRef = useRef({ from: fromDate, to: toDate, page: 1, upcomingPage: 1 });
-  rangeRef.current = { from: fromDate, to: toDate, page: actionPage, upcomingPage };
+  const rangeRef = useRef({ from: fromDate, to: toDate, page: 1, upcomingPage: 1, callSort, upcomingSort });
+  rangeRef.current = { from: fromDate, to: toDate, page: actionPage, upcomingPage, callSort, upcomingSort };
 
   async function load(
     nextFrom = rangeRef.current.from,
     nextTo = rangeRef.current.to,
     page = rangeRef.current.page,
     nextUpcomingPage = rangeRef.current.upcomingPage,
+    nextCallSort = rangeRef.current.callSort,
+    nextUpcomingSort = rangeRef.current.upcomingSort,
   ) {
     const { data } = await api.get<DashboardStats>("/dashboard", {
       params: {
@@ -62,6 +64,8 @@ export function DashboardPage() {
         pageSize: ACTION_PAGE_SIZE,
         upcomingPage: nextUpcomingPage,
         upcomingPageSize: 5,
+        sort: nextCallSort,
+        upcomingSort: nextUpcomingSort,
       },
     });
     setStats(data);
@@ -254,20 +258,27 @@ export function DashboardPage() {
         ))}
       </section>
 
+      {!isDoctor && (
       <UpcomingList
         title="Upcoming appointments"
-        subtitle={isDoctor ? "Patients booked with you, sorted by date" : "All doctors — next visits first"}
+        subtitle="All doctors — next visits first"
         empty="No upcoming appointments."
         action={<Link className="text-sm font-semibold text-teal-700 hover:underline" to="/appointments">Open schedule</Link>}
         page={stats.upcomingItemPage ?? upcomingPage}
         pageSize={stats.upcomingItemPageSize ?? 5}
         total={stats.upcomingItemTotal ?? stats.upcomingAppointments}
+        sortDir={upcomingSort}
+        onSortDirChange={(dir) => {
+          setUpcomingSort(dir);
+          setUpcomingPage(1);
+          void load(fromDate, toDate, actionPage, 1, callSort, dir);
+        }}
         onPageChange={(next) => {
           setUpcomingPage(next);
           void load(fromDate, toDate, actionPage, next);
         }}
       >
-        {(stats.upcomingAppointmentItems ?? []).map((item: Appointment) => (
+        {sortRecords(stats.upcomingAppointmentItems ?? [], upcomingSort).map((item: Appointment) => (
           <article key={item.id} className="flex items-start justify-between gap-3 rounded-2xl bg-slate-50 px-4 py-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.14em] text-teal-700">{formatDay(item.scheduledAt)} · {formatTime(item.scheduledAt)}</p>
@@ -279,6 +290,7 @@ export function DashboardPage() {
           </article>
         ))}
       </UpcomingList>
+      )}
 
       <section className="grid gap-4 xl:grid-cols-2">
         <div className="card p-5">
@@ -330,14 +342,14 @@ export function DashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {stats.actionItems.length === 0 ? (
+              {sortRecords(stats.actionItems, callSort).length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-5 py-8 text-center text-slate-500">
                     {isDoctor ? "No calls booked with you in this date range." : "No calls in this date range."}
                   </td>
                 </tr>
               ) : (
-                stats.actionItems.map((item) => (
+                sortRecords(stats.actionItems, callSort).map((item) => (
                   <tr key={item.id} className="border-t border-slate-100 align-top">
                     <td className="px-5 py-3 font-medium text-slate-800">{item.callerName || "—"}</td>
                     <td className="px-5 py-3 text-slate-700">{item.callerPhone || "—"}</td>
@@ -398,7 +410,15 @@ export function DashboardPage() {
               Showing {(stats.actionItemPage - 1) * stats.actionItemPageSize + 1}–
               {Math.min(stats.actionItemPage * stats.actionItemPageSize, stats.actionItemTotal)} of {stats.actionItemTotal}
             </p>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <SortSelect
+                value={callSort}
+                onChange={(dir) => {
+                  setCallSort(dir);
+                  setActionPage(1);
+                  void load(fromDate, toDate, 1, upcomingPage, dir, upcomingSort);
+                }}
+              />
               <button
                 className="btn-ghost"
                 disabled={stats.actionItemPage <= 1}
@@ -442,6 +462,8 @@ function UpcomingList({
   pageSize,
   total,
   onPageChange,
+  sortDir,
+  onSortDirChange,
 }: {
   title: string;
   subtitle: string;
@@ -452,6 +474,8 @@ function UpcomingList({
   pageSize: number;
   total: number;
   onPageChange: (page: number) => void;
+  sortDir?: SortDir;
+  onSortDirChange?: (dir: SortDir) => void;
 }) {
   const items = Children.toArray(children);
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
@@ -472,7 +496,8 @@ function UpcomingList({
           <p className="text-sm text-slate-500">
             Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} of {total}
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {sortDir && onSortDirChange ? <SortSelect value={sortDir} onChange={onSortDirChange} /> : null}
             <button className="btn-ghost" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
               Previous
             </button>

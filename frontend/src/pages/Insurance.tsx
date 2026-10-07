@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, type InsuranceClaim, type InsurancePolicy, type Invoice, type Patient } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import { Pagination } from "../components/Pagination";
+import { pagerProps, usePaged } from "../lib/pager";
 
 function money(value: number) {
   return `₹${value.toLocaleString("en-IN")}`;
@@ -32,6 +34,8 @@ export function InsurancePage() {
     coverageLimit: 500000,
   });
   const [claim, setClaim] = useState({ policyId: 0, invoiceId: "", amount: 0, notes: "" });
+  const pagedPolicies = usePaged(policies, 8);
+  const pagedClaims = usePaged(claims, 8);
 
   async function load() {
     const [pol, clm, inv, pat] = await Promise.all([
@@ -186,7 +190,7 @@ export function InsurancePage() {
               </tr>
             </thead>
             <tbody>
-              {policies.map((item) => (
+              {pagedPolicies.items.map((item) => (
                 <tr key={item.id} className="border-t border-slate-100">
                   <td className="px-5 py-3 font-medium">{item.patientName}</td>
                   <td className="px-5 py-3">
@@ -227,6 +231,7 @@ export function InsurancePage() {
             </tbody>
           </table>
         </div>
+        <Pagination {...pagerProps(pagedPolicies)} />
       </section>
 
       <section className="card overflow-hidden">
@@ -245,7 +250,7 @@ export function InsurancePage() {
               </tr>
             </thead>
             <tbody>
-              {claims.map((item) => (
+              {pagedClaims.items.map((item) => (
                 <tr key={item.id} className="border-t border-slate-100">
                   <td className="px-5 py-3 font-medium">{item.claimNumber}</td>
                   <td className="px-5 py-3">
@@ -276,6 +281,7 @@ export function InsurancePage() {
             </tbody>
           </table>
         </div>
+        <Pagination {...pagerProps(pagedClaims)} />
       </section>
     </div>
   );

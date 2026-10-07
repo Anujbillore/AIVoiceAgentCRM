@@ -39,8 +39,8 @@ public class SettingsController : ControllerBase
         var raw = DatabaseConfiguration.ReadRaw(_config) ?? string.Empty;
         var connected = await _db.Database.CanConnectAsync(cancellationToken);
         return new SystemStatusDto(
-            "Supabase PostgreSQL",
-            string.IsNullOrWhiteSpace(raw) ? "not configured" : DatabaseConfiguration.HostName(raw),
+            "Clinic database",
+            connected ? "Connected" : "Disconnected",
             connected,
             await _db.Patients.CountAsync(cancellationToken),
             await _db.Doctors.CountAsync(cancellationToken),
@@ -111,6 +111,11 @@ public class SettingsController : ControllerBase
     [HttpPut("ai")]
     public async Task<ActionResult<AiSettingsDto>> UpdateAi(AiSettingsDto request, CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(request.AgentName) || string.IsNullOrWhiteSpace(request.WelcomeMessage))
+        {
+            return BadRequest(new { message = "Agent name and welcome message are required." });
+        }
+
         var settings = await _db.AiSettings.FirstAsync(cancellationToken);
         settings.AgentName = request.AgentName;
         settings.WelcomeMessage = request.WelcomeMessage;
